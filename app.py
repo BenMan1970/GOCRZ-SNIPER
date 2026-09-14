@@ -1151,50 +1151,109 @@ def main():
 
     st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+    :root {
+        --void:      #07080c;
+        --surface:   #0e1016;
+        --surface-2: #151822;
+        --line:      #1c202b;
+        --ink:       #f2f4f9;
+        --muted:     #6b7280;
+        --muted-2:   #454b5a;
+        --gold:      #f0a832;
+        --gold-dim:  rgba(240,168,50,0.14);
+        --bull:      #22d38a;
+        --bear:      #ff5470;
+    }
+
     html, body, [class*="css"] { font-family: 'Space Grotesk', sans-serif; }
-    .stApp { background: #0e0e14; }
-    h1 { font-family: 'IBM Plex Mono', monospace !important; letter-spacing: .04em; }
+    .stApp {
+        background:
+            radial-gradient(ellipse 900px 500px at 15% -10%, rgba(240,168,50,0.05), transparent),
+            var(--void);
+    }
+    #MainMenu, footer, header[data-testid="stHeader"] { background: transparent; }
+
+    h1, h2, h3 { font-family: 'Space Grotesk', sans-serif !important; font-weight: 600 !important; }
+
+    /* Boutons — le CTA principal porte toute l'audace visuelle, le reste reste sobre */
     .stButton > button {
-        background: #141420 !important; color: #a0b4cc !important;
-        border: 1px solid #2a3448 !important;
-        font-family: 'IBM Plex Mono', monospace !important;
-        font-weight: 700 !important; letter-spacing: .06em !important;
-        border-radius: 4px !important; transition: all .2s ease !important;
+        background: var(--gold) !important; color: #1a1206 !important;
+        border: none !important;
+        font-family: 'Space Grotesk', sans-serif !important;
+        font-weight: 600 !important; font-size: 14.5px !important; letter-spacing: .01em !important;
+        border-radius: 8px !important; padding: 11px 0 !important;
+        transition: transform .15s ease, box-shadow .15s ease !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,.3) !important;
     }
     .stButton > button:hover {
-        background: #1c2030 !important; border-color: #3a4a68 !important;
-        color: #c8d8e8 !important;
+        transform: translateY(-1px) !important;
+        box-shadow: 0 6px 18px rgba(240,168,50,.28) !important;
     }
-    .stSelectbox label { color: #606080 !important; font-size: 12px !important;
-        text-transform: uppercase !important; letter-spacing: .08em !important; }
+    .stButton > button:active { transform: translateY(0) !important; }
+
+    .stSelectbox label, .stToggle label {
+        color: var(--muted) !important; font-size: 12.5px !important; font-weight: 500 !important;
+    }
+    .stSelectbox > div > div {
+        background: var(--surface) !important; border: 1px solid var(--line) !important;
+        border-radius: 7px !important;
+    }
+    .stSelectbox > div > div:focus-within { border-color: var(--gold) !important; }
+
     [data-testid="stMetric"] {
-        background: #121218; border: 1px solid #1e1e2e;
-        border-radius: 6px; padding: 12px 16px !important;
+        background: transparent !important; border: none !important;
+        border-top: 1px solid var(--line) !important;
+        border-radius: 0 !important; padding: 14px 4px 2px 2px !important;
     }
-    [data-testid="stMetricValue"] { font-family: 'IBM Plex Mono', monospace !important; }
-    .streamlit-expanderHeader { color: #606080 !important; font-size: 12px !important;
-        text-transform: uppercase !important; }
-    hr { border-color: #1a1a28 !important; }
+    [data-testid="stMetricLabel"] { color: var(--muted) !important; font-size: 12.5px !important; }
+    [data-testid="stMetricValue"] {
+        font-family: 'IBM Plex Mono', monospace !important; color: var(--ink) !important;
+        font-size: 26px !important; font-weight: 600 !important;
+    }
+
+    .streamlit-expanderHeader {
+        color: var(--muted) !important; font-size: 13px !important; font-weight: 500 !important;
+    }
+    [data-testid="stExpander"] {
+        background: var(--surface) !important; border: 1px solid var(--line) !important;
+        border-radius: 8px !important;
+    }
+    hr { border-color: var(--line) !important; margin: 18px 0 !important; }
+    ::selection { background: var(--gold-dim); }
     </style>
     """, unsafe_allow_html=True)
 
     # Killzone active — calculée une seule fois
     kz_now  = get_current_killzone()
-    kz_html = (f'<span style="font-size:12px;font-family:\'IBM Plex Mono\',monospace;'
-               f'color:#5a9e7a;letter-spacing:.08em;margin-left:14px">'
-               f'{killzone_badge(kz_now)}</span>'
+    kz_html = (f'<span style="display:inline-flex;align-items:center;gap:6px;'
+               f'padding:4px 10px 4px 8px;border-radius:20px;'
+               f'background:rgba(34,211,138,0.1);border:1px solid rgba(34,211,138,0.3);'
+               f'margin-left:12px;vertical-align:middle">'
+               f'<span style="width:6px;height:6px;border-radius:50%;background:#22d38a;'
+               f'box-shadow:0 0 6px #22d38a;display:inline-block"></span>'
+               f'<span style="font-size:12px;font-family:\'Space Grotesk\',sans-serif;'
+               f'color:#22d38a;font-weight:600">{killzone_badge(kz_now)}</span>'
+               f'</span>'
                if kz_now else "")
 
     st.markdown(f"""
-    <div style="display:flex;align-items:center;gap:14px;margin-bottom:4px">
-      <span style="font-size:36px">🎯</span>
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px">
+      <div style="position:relative;width:44px;height:44px;flex-shrink:0">
+        <div style="position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--gold)"></div>
+        <div style="position:absolute;inset:9px;border-radius:50%;border:1.5px solid var(--gold);opacity:.55"></div>
+        <div style="position:absolute;top:50%;left:-2px;right:-2px;height:1px;background:var(--gold)"></div>
+        <div style="position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:var(--gold)"></div>
+        <div style="position:absolute;inset:19px;border-radius:50%;background:var(--gold);
+                    box-shadow:0 0 10px var(--gold)"></div>
+      </div>
       <div>
-        <h1 style="margin:0;font-size:28px;color:#e8e8f8">
-          BLUESTAR SNIPER V16 {kz_html}
+        <h1 style="margin:0;font-size:26px;color:var(--ink);font-weight:600;letter-spacing:-.01em">
+          Bluestar Sniper <span style="color:var(--muted);font-weight:500;font-size:16px">V16</span>{kz_html}
         </h1>
-        <p style="margin:0;color:#4a4a7a;font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.1em">
-          HMA 20 M15 · MTF INSTITUTIONAL · ADR DAILY · FORCE H4·H1·M15 · LUXALGO FVG
+        <p style="margin:2px 0 0;color:var(--muted);font-family:'Space Grotesk',sans-serif;font-size:13px">
+          HMA 20 · M15 · Multi-timeframe · ADR quotidien · Force H4 / H1 / M15 · FVG
         </p>
       </div>
     </div>
@@ -1252,12 +1311,23 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 
     if not run:
         st.markdown("""
-        <div style="text-align:center;padding:60px 0;color:#2a2a4a">
-          <div style="font-size:48px">📡</div>
-          <div style="font-family:'IBM Plex Mono',monospace;font-size:14px;letter-spacing:.1em;margin-top:12px">
-            EN ATTENTE — APPUIE SUR LANCER
+        <div style="text-align:center;padding:72px 0 60px">
+          <div style="position:relative;width:64px;height:64px;margin:0 auto 20px">
+            <div class="reticle-pulse" style="position:absolute;inset:0;border-radius:50%;
+                        border:1.5px solid var(--gold);opacity:.35"></div>
+            <div style="position:absolute;inset:14px;border-radius:50%;border:1.5px solid var(--gold);opacity:.6"></div>
+            <div style="position:absolute;top:50%;left:0;right:0;height:1px;background:var(--gold);opacity:.4"></div>
+            <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--gold);opacity:.4"></div>
+            <div style="position:absolute;inset:29px;border-radius:50%;background:var(--gold)"></div>
+          </div>
+          <div style="font-family:'Space Grotesk',sans-serif;font-size:14px;color:var(--muted)">
+            En attente — lance le scanner pour voir les signaux actifs
           </div>
         </div>
+        <style>
+        @keyframes reticle-breathe { 0%,100%{transform:scale(1);opacity:.35} 50%{transform:scale(1.25);opacity:0} }
+        .reticle-pulse { animation: reticle-breathe 2.2s ease-out infinite; }
+        </style>
         """, unsafe_allow_html=True)
         return
 
@@ -1390,67 +1460,72 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 
     # ── STYLES ───────────────────────────────────────────────────
     GRADE_STYLE = {
-        "A+": {"color": "#5a9e7a", "bg": "rgba(90,158,122,0.07)", "label": "A+"},
-        "A":  {"color": "#4e8a6c", "bg": "rgba(78,138,108,0.05)", "label": "A"},
-        "B+": {"color": "#9a7820", "bg": "transparent",           "label": "B+"},
-        "B":  {"color": "#5a6880", "bg": "transparent",           "label": "B"},
-        "C":  {"color": "#383848", "bg": "transparent",           "label": "C"},
+        "A+": {"color": "#f0a832", "bg": "rgba(240,168,50,0.06)",  "label": "A+"},
+        "A":  {"color": "#c99a5b", "bg": "rgba(201,154,91,0.04)", "label": "A"},
+        "B+": {"color": "#5b9fd6", "bg": "transparent",            "label": "B+"},
+        "B":  {"color": "#6b7280", "bg": "transparent",            "label": "B"},
+        "C":  {"color": "#454b5a", "bg": "transparent",            "label": "C"},
     }
 
     def sig_style(s):
         if "LONG"  in s and "expiré" not in s:
-            return "color:#5ab888;font-weight:700;font-size:16px;letter-spacing:.03em"
+            return "color:#22d38a;font-weight:700;font-size:16px"
         if "SHORT" in s and "expiré" not in s:
-            return "color:#c05848;font-weight:700;font-size:16px;letter-spacing:.03em"
-        return "color:#484860;font-size:12px"
+            return "color:#ff5470;font-weight:700;font-size:16px"
+        return "color:#454b5a;font-size:12px"
 
     def bias_daily_label(b):
-        if b == "STRONG BULLISH": return "▲▲ STRONG BULL"
-        if b == "BULLISH":        return "▲ BULL"
-        if b == "STRONG BEARISH": return "▼▼ STRONG BEAR"
-        if b == "BEARISH":        return "▼ BEAR"
-        return "— NEUTRAL"
+        if b == "STRONG BULLISH": return "▲▲ Strong bull"
+        if b == "BULLISH":        return "▲ Bull"
+        if b == "STRONG BEARISH": return "▼▼ Strong bear"
+        if b == "BEARISH":        return "▼ Bear"
+        return "— Neutral"
 
     def bias_daily_style(b):
-        if "STRONG BULLISH" in b: return "color:#5daa7a;font-weight:700;font-size:14px"
-        if "BULLISH"        in b: return "color:#4a8a65;font-weight:600;font-size:14px"
-        if "STRONG BEARISH" in b: return "color:#c05858;font-weight:700;font-size:14px"
-        if "BEARISH"        in b: return "color:#924242;font-weight:600;font-size:14px"
-        return "color:#565670;font-size:14px"
+        if "STRONG BULLISH" in b: return "color:#22d38a;font-weight:700;font-size:14px"
+        if "BULLISH"        in b: return "color:#5bb98a;font-weight:600;font-size:14px"
+        if "STRONG BEARISH" in b: return "color:#ff5470;font-weight:700;font-size:14px"
+        if "BEARISH"        in b: return "color:#d3708a;font-weight:600;font-size:14px"
+        return "color:#6b7280;font-size:14px"
 
     def zone_style(z):
-        if "DISCOUNT" in z: return "color:#6a9ab8;font-weight:600"
-        if "PREMIUM"  in z: return "color:#b08040;font-weight:600"
-        if "EXT HIGH" in z: return "color:#c05a48;font-weight:600;font-style:italic"
-        if "EXT LOW"  in z: return "color:#4a9ab8;font-weight:600;font-style:italic"
-        return "color:#5a5a72"
+        if "DISCOUNT" in z: return "color:#5b9fd6;font-weight:600"
+        if "PREMIUM"  in z: return "color:#f0a832;font-weight:600"
+        if "EXT HIGH" in z: return "color:#ff5470;font-weight:600;font-style:italic"
+        if "EXT LOW"  in z: return "color:#5bc8e8;font-weight:600;font-style:italic"
+        return "color:#6b7280"
 
     def fresh_style(f):
-        return "color:#b89030;font-weight:700" if "⚡" in f else "color:#4a4a62"
+        return "color:#f0a832;font-weight:700" if "⚡" in f else "color:#454b5a"
 
     def score_bar(score):
-        """Score négatif possible (malus ADR) — affiché tel quel."""
-        color = "#5a9e7a" if score >= 70 else "#9a7820" if score >= 40 else "#9e4a3a"
-        width = max(4, min(score, 100)) if score >= 0 else 4
-        label = str(score)                                   # affiche -5, -3, etc.
-        return f"""<div style="display:flex;align-items:center;gap:8px">
-          <div style="width:60px;height:4px;background:#1a1a22;border-radius:2px;overflow:hidden">
-            <div style="width:{width}%;height:100%;background:{color};border-radius:2px"></div>
+        """Score négatif possible (malus ADR/Bias) — affiché tel quel."""
+        if score >= 70:
+            color, glow = "#f0a832", "0 0 8px rgba(240,168,50,.45)"
+        elif score >= 40:
+            color, glow = "#5b9fd6", "none"
+        else:
+            color, glow = "#6b7280", "none"
+        width = max(4, min(score, 103) / 103 * 100) if score >= 0 else 4
+        label = str(score)
+        return f"""<div style="display:flex;align-items:center;gap:9px">
+          <div style="width:56px;height:5px;background:var(--surface-2);border-radius:3px;overflow:hidden">
+            <div style="width:{width}%;height:100%;background:{color};border-radius:3px;box-shadow:{glow}"></div>
           </div>
-          <span style="color:{color};font-weight:700;font-size:15px">{label}</span>
+          <span style="color:{color};font-weight:700;font-size:14.5px;font-family:'IBM Plex Mono',monospace">{label}</span>
         </div>"""
 
     def adr_cell(v, label="ADR", consumed: float | None = None):
         if v is None:
-            return '<span style="color:#4a4a62">—</span>'
+            return '<span style="color:#454b5a">—</span>'
 
         formatted = f"{v:.5f}" if v < 1.0 else f"{v:.2f}"
-        tag_color = "#4a7898" if label == "ADR" else "#6a5a78"
+        tag_color = "#5b9fd6" if label == "ADR" else "#c99a5b"
 
         tag_html = (
             f'<span style="color:{tag_color};font-size:10px;font-family:\'IBM Plex Mono\','
-            f'monospace;margin-right:4px">{label}</span>'
-            f'<span style="color:#7a8aa0;font-family:\'IBM Plex Mono\','
+            f'monospace;margin-right:4px;font-weight:600">{label}</span>'
+            f'<span style="color:#9099ab;font-family:\'IBM Plex Mono\','
             f'monospace;font-size:13px">{formatted}</span>'
         )
 
@@ -1460,20 +1535,20 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         consumed = float(consumed)
 
         if consumed < 40:
-            bar_color = "#5a9e7a"
-            pct_color = "#5a9e7a"
+            bar_color = "#22d38a"
+            pct_color = "#22d38a"
         elif consumed < 70:
-            bar_color = "#9a7820"
-            pct_color = "#9a7820"
+            bar_color = "#f0a832"
+            pct_color = "#f0a832"
         else:
-            bar_color = "#9e4a3a"
-            pct_color = "#9e4a3a"
+            bar_color = "#ff5470"
+            pct_color = "#ff5470"
 
         fill_width = int(min(max(consumed, 0), 100))
 
         gauge_html = (
             f'<div style="display:flex;align-items:center;gap:6px;margin-top:4px">'
-            f'<div style="width:52px;height:3px;background:#1a1a22;border-radius:2px;overflow:hidden">'
+            f'<div style="width:48px;height:3px;background:var(--surface-2);border-radius:2px;overflow:hidden">'
             f'<div style="width:{fill_width}%;height:100%;background:{bar_color};border-radius:2px"></div>'
             f'</div>'
             f'<span style="color:{pct_color};font-size:10px;font-family:\'IBM Plex Mono\','
@@ -1484,64 +1559,70 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         return f'<div>{tag_html}{gauge_html}</div>'
 
     def force_cell(momentum_score: int, delta, is_bull: bool) -> str:
-        color    = "#5a9e7a" if is_bull else "#9e4a3a"
+        color    = "#22d38a" if is_bull else "#ff5470"
         filled   = f'background:{color};border-radius:2px'
-        empty    = 'background:#1e1e2e;border-radius:2px'
+        empty    = 'background:var(--surface-2);border-radius:2px'
         segments = "".join(
-            f'<div style="width:14px;height:9px;{filled if i < momentum_score else empty}"></div>'
+            f'<div style="width:13px;height:8px;{filled if i < momentum_score else empty}"></div>'
             for i in range(3)
         )
         bars = (f'<div style="display:flex;gap:3px;align-items:center">'
                 f'{segments}</div>')
 
         if delta is not None:
-            delta_color = ("#5a9e7a" if delta >= 1.5
-                           else "#9e4a3a" if delta <= -1.5
-                           else "#6a7888")
+            delta_color = ("#22d38a" if delta >= 1.5
+                           else "#ff5470" if delta <= -1.5
+                           else "#6b7280")
             sign  = "+" if delta > 0 else ""
             delta_html = (f'<span style="color:{delta_color};font-weight:700;'
                           f'font-size:12px;font-family:\'IBM Plex Mono\','
                           f'monospace;margin-left:7px">{sign}{delta:.1f}</span>')
         else:
-            delta_html = '<span style="color:#4a4a62;margin-left:7px;font-size:11px">n/a</span>'
+            delta_html = '<span style="color:#454b5a;margin-left:7px;font-size:11px">n/a</span>'
 
         return (f'<div style="display:flex;align-items:center">'
                 f'{bars}{delta_html}</div>')
 
     html = """
 <style>
-.sc-wrap{overflow-x:auto;margin-top:4px}
-.sc-tbl{width:100%;border-collapse:collapse;font-family:'IBM Plex Mono','Courier New',monospace;font-size:15px}
-.sc-tbl thead tr{border-bottom:2px solid #3a3a6a}
+.sc-wrap{overflow-x:auto;margin-top:4px;border:1px solid var(--line);border-radius:10px}
+.sc-tbl{width:100%;border-collapse:collapse;font-family:'Space Grotesk',sans-serif;font-size:14.5px}
+.sc-tbl thead tr{border-bottom:1px solid var(--line)}
 .sc-tbl th{
-  padding:10px 16px;text-align:left;
-  color:#a0b0d8;
-  font-size:12px;text-transform:uppercase;letter-spacing:.12em;font-weight:700;
+  padding:12px 16px;text-align:left;
+  color:var(--muted);
+  font-size:12.5px;font-weight:500;
   white-space:nowrap;
-  background:#10101a;
-  border-bottom:2px solid #3a3a6a;
+  background:var(--surface);
 }
-.sc-tbl td{padding:13px 16px;border-bottom:1px solid #1c1c2e;vertical-align:middle}
-.sc-tbl tr:hover td{background:#16161f !important}
-.ticker{font-size:22px;font-weight:800;color:#dcdce8;letter-spacing:.04em;white-space:nowrap;font-family:'IBM Plex Mono',monospace}
+.sc-tbl th:first-child{border-radius:10px 0 0 0}
+.sc-tbl th:last-child{border-radius:0 10px 0 0}
+.sc-tbl td{padding:12px 16px;border-bottom:1px solid var(--line);vertical-align:middle;position:relative}
+.sc-tbl tbody tr{transition:background .12s ease}
+.sc-tbl tbody tr:hover td{background:var(--surface-2) !important}
+.sc-tbl tbody tr:last-child td{border-bottom:none}
+.sc-tbl td:first-child{border-left:3px solid transparent}
+.rail-bull td:first-child{border-left:3px solid #22d38a}
+.rail-bear td:first-child{border-left:3px solid #ff5470}
+.ticker{font-size:19px;font-weight:600;color:var(--ink);white-space:nowrap;font-family:'Space Grotesk',sans-serif}
 .grade-pill{
-  display:inline-block;padding:2px 8px;border-radius:2px;
-  font-size:12px;font-weight:700;letter-spacing:.08em;
-  border:1px solid currentColor;margin-left:10px;vertical-align:middle;font-family:'IBM Plex Mono',monospace
+  display:inline-block;padding:2px 9px;border-radius:20px;
+  font-size:11.5px;font-weight:600;
+  background:currentColor;margin-left:9px;vertical-align:middle;font-family:'Space Grotesk',sans-serif
 }
-.kz-badge{
-  display:inline-block;padding:2px 7px;border-radius:2px;
-  font-size:10px;font-weight:700;letter-spacing:.06em;
-  background:rgba(90,158,122,0.18);color:#6ab88e;
-  border:1px solid rgba(90,158,122,0.45);margin-left:8px;vertical-align:middle
+.grade-pill span{color:var(--void);opacity:1}
+.chip{
+  display:inline-block;padding:2px 8px;border-radius:20px;
+  font-size:10.5px;font-weight:600;
+  margin-left:6px;vertical-align:middle
 }
 </style>
 <div class="sc-wrap"><table class="sc-tbl">
 <thead><tr>
-  <th style="width:100px">Fraîcheur</th>
+  <th style="width:96px">Fraîcheur</th>
   <th>Actif</th>
   <th>Signal</th>
-  <th>Biais Daily</th>
+  <th>Biais daily</th>
   <th>Zone</th>
   <th>Score /103</th>
   <th>ADR / ATR</th>
@@ -1570,22 +1651,28 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 
         align_tag = ""
         if alignment == "COUNTER":
-            align_tag = '<span style="font-size:10px;color:#c05a48;font-weight:700;margin-left:6px">⚠ COUNTER</span>'
+            align_tag = ('<span class="chip" style="background:rgba(255,84,112,.12);'
+                         'color:#ff5470">⚠ counter</span>')
 
-        kz_tag = (f'<span class="kz-badge">{killzone_badge(kz_now)}</span>'
+        kz_tag = (f'<span class="chip" style="background:rgba(34,211,138,.12);color:#22d38a">'
+                  f'{killzone_badge(kz_now)}</span>'
                   if kz_now and fresh else "")
 
-        mn_tag = ('<span style="font-size:10px;color:#5a7898;font-weight:700;'
-                  'margin-left:6px;vertical-align:middle">🌙</span>'
+        mn_tag = ('<span style="font-size:11px;margin-left:6px;vertical-align:middle" '
+                  'title="Confluence midnight open">🌙</span>'
                   if mn_bonus else "")
 
-        row_bg = gs["bg"] if fresh and grade in ("A+", "A") else "transparent"
+        row_bg  = gs["bg"] if fresh and grade in ("A+", "A") else "transparent"
+        rail    = "rail-bull" if is_bull else "rail-bear"
+        row_style = f'background:{row_bg}'
+        if fresh and grade == "A+":
+            row_style += ';box-shadow:inset 0 0 24px rgba(240,168,50,.05)'
 
-        html += f"""<tr style="background:{row_bg}">
+        html += f"""<tr class="{rail}" style="{row_style}">
   <td style="{fresh_style(fresh_str)}">{fresh_str}</td>
   <td style="white-space:nowrap">
     <span class="ticker">{ticker}</span>
-    <span class="grade-pill" style="color:{gs['color']}">{gs['label']}</span>
+    <span class="grade-pill" style="color:{gs['color']}"><span>{gs['label']}</span></span>
     {align_tag}
   </td>
   <td style="{sig_style(sig)}">{sig}{kz_tag}</td>
@@ -1600,10 +1687,10 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     st.markdown(html, unsafe_allow_html=True)
 
     st.markdown(f"""
-    <div style="color:#2a2a4a;font-family:'IBM Plex Mono',monospace;font-size:10px;
-                text-align:right;margin-top:6px;letter-spacing:.06em">
+    <div style="color:var(--muted-2);font-family:'Space Grotesk',sans-serif;font-size:11.5px;
+                text-align:right;margin-top:10px">
       {len(df)} signal(s) · scanné en {elapsed}s · {datetime.now().strftime('%H:%M:%S')}
-      {'· <span style="color:#5a9e7a">KZ ' + kz_now + ' ACTIVE</span>' if kz_now else ''}
+      {'· <span style="color:#22d38a">killzone ' + kz_now + ' active</span>' if kz_now else ''}
     </div>
     """, unsafe_allow_html=True)
 
