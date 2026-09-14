@@ -87,11 +87,48 @@ def get_current_killzone() -> str:
             return name
     return ""
 
+KZ_STYLE = {
+    "London": ("LONDON",      "#60a5fa"),
+    "NY AM":  ("NEW YORK AM", "#a78bfa"),
+    "Asia":   ("ASIA",        "#5eead4"),
+}
+
 def killzone_badge(kz: str) -> str:
-    if kz == "London": return "🟢 KZ London"
-    if kz == "NY AM":  return "🔵 KZ NY AM"
-    if kz == "Asia":   return "🟠 KZ Asia"
-    return ""
+    return KZ_STYLE.get(kz, ("", ""))[0]
+
+def killzone_color(kz: str) -> str:
+    return KZ_STYLE.get(kz, ("", "#7a84a0"))[1]
+
+
+# ----------------------------------------------------------------
+#  ICONOGRAPHIE — SVG inline, hérite de currentColor
+# ----------------------------------------------------------------
+def icon_arrow(up: bool, size: int = 12) -> str:
+    d = "M7 2.4 11.7 9.6H2.3z" if up else "M7 11.6 2.3 4.4h9.4z"
+    return (f'<svg width="{size}" height="{size}" viewBox="0 0 14 14" '
+            f'style="vertical-align:-1px"><path d="{d}" fill="currentColor"/></svg>')
+
+ICON_BOLT = ('<svg width="11" height="11" viewBox="0 0 14 14" style="vertical-align:-1px">'
+             '<path d="M8.1 1 3.2 8.1h2.9L5.4 13l5.4-7.4H7.4L8.1 1z" fill="currentColor"/></svg>')
+
+ICON_CLOCK = ('<svg width="11" height="11" viewBox="0 0 14 14" fill="none" style="vertical-align:-1px">'
+              '<circle cx="7" cy="7" r="5.1" stroke="currentColor" stroke-width="1.25"/>'
+              '<path d="M7 4.3V7.2l1.9 1.2" stroke="currentColor" stroke-width="1.25" '
+              'stroke-linecap="round"/></svg>')
+
+ICON_MOON = ('<svg width="11" height="11" viewBox="0 0 14 14" style="vertical-align:-1px">'
+             '<path d="M9.5 9A4.3 4.3 0 0 1 5.2 4.7c0-.8.2-1.6.6-2.2A5 5 0 1 0 11.7 8.4c-.6.4-1.4.6-2.2.6z" '
+             'fill="currentColor"/></svg>')
+
+ICON_ALERT = ('<svg width="11" height="11" viewBox="0 0 14 14" fill="none" style="vertical-align:-1px">'
+              '<path d="M7 2 12.4 11.4H1.6L7 2z" stroke="currentColor" stroke-width="1.15"/>'
+              '<path d="M7 5.6v2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'
+              '<circle cx="7" cy="10" r=".72" fill="currentColor"/></svg>')
+
+ICON_TARGET = ('<svg width="13" height="13" viewBox="0 0 16 16" fill="none">'
+               '<circle cx="8" cy="8" r="6.2" stroke="currentColor" stroke-width="1.2" opacity=".45"/>'
+               '<circle cx="8" cy="8" r="2.6" stroke="currentColor" stroke-width="1.2"/>'
+               '<circle cx="8" cy="8" r="1" fill="currentColor"/></svg>')
 
 
 # ----------------------------------------------------------------
@@ -1151,109 +1188,182 @@ def main():
 
     st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
-    :root {
-        --void:      #07080c;
-        --surface:   #0e1016;
-        --surface-2: #151822;
-        --line:      #1c202b;
-        --ink:       #f2f4f9;
-        --muted:     #6b7280;
-        --muted-2:   #454b5a;
-        --gold:      #f0a832;
-        --gold-dim:  rgba(240,168,50,0.14);
-        --bull:      #22d38a;
-        --bear:      #ff5470;
-    }
-
-    html, body, [class*="css"] { font-family: 'Space Grotesk', sans-serif; }
-    .stApp {
-        background:
-            radial-gradient(ellipse 900px 500px at 15% -10%, rgba(240,168,50,0.05), transparent),
-            var(--void);
-    }
-    #MainMenu, footer, header[data-testid="stHeader"] { background: transparent; }
-
-    h1, h2, h3 { font-family: 'Space Grotesk', sans-serif !important; font-weight: 600 !important; }
-
-    /* Boutons — le CTA principal porte toute l'audace visuelle, le reste reste sobre */
-    .stButton > button {
-        background: var(--gold) !important; color: #1a1206 !important;
-        border: none !important;
-        font-family: 'Space Grotesk', sans-serif !important;
-        font-weight: 600 !important; font-size: 14.5px !important; letter-spacing: .01em !important;
-        border-radius: 8px !important; padding: 11px 0 !important;
-        transition: transform .15s ease, box-shadow .15s ease !important;
-        box-shadow: 0 1px 2px rgba(0,0,0,.3) !important;
-    }
-    .stButton > button:hover {
-        transform: translateY(-1px) !important;
-        box-shadow: 0 6px 18px rgba(240,168,50,.28) !important;
-    }
-    .stButton > button:active { transform: translateY(0) !important; }
-
-    .stSelectbox label, .stToggle label {
-        color: var(--muted) !important; font-size: 12.5px !important; font-weight: 500 !important;
-    }
-    .stSelectbox > div > div {
-        background: var(--surface) !important; border: 1px solid var(--line) !important;
-        border-radius: 7px !important;
-    }
-    .stSelectbox > div > div:focus-within { border-color: var(--gold) !important; }
-
-    [data-testid="stMetric"] {
-        background: transparent !important; border: none !important;
-        border-top: 1px solid var(--line) !important;
-        border-radius: 0 !important; padding: 14px 4px 2px 2px !important;
-    }
-    [data-testid="stMetricLabel"] { color: var(--muted) !important; font-size: 12.5px !important; }
-    [data-testid="stMetricValue"] {
-        font-family: 'IBM Plex Mono', monospace !important; color: var(--ink) !important;
-        font-size: 26px !important; font-weight: 600 !important;
+    :root{
+      --bg:#070910;
+      --surface:#0e1220;   --surface-2:#141926;  --surface-3:#1a2132;
+      --line:#1c2233;      --line-2:#283049;
+      --ink:#edf0f7;       --ink-2:#b6bfd4;
+      --muted:#7a84a0;     --muted-2:#49516a;
+      --mint:#5eead4;      --mint-2:#a9f3e6;
+      --fuchsia:#f472b6;   --fuchsia-2:#f9a8d4;
+      --azure:#60a5fa;     --azure-2:#9cc7fd;
+      --iris:#a78bfa;      --amber:#fbbf24;
+      --bull:#5eead4;      --bear:#f472b6;
     }
 
-    .streamlit-expanderHeader {
-        color: var(--muted) !important; font-size: 13px !important; font-weight: 500 !important;
+    html, body, [class*="css"]{
+      font-family:'Inter Tight',-apple-system,BlinkMacSystemFont,sans-serif;
+      -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
     }
-    [data-testid="stExpander"] {
-        background: var(--surface) !important; border: 1px solid var(--line) !important;
-        border-radius: 8px !important;
+    .stApp{
+      background:
+        radial-gradient(1150px 540px at 6% -14%,  rgba(96,165,250,.11), transparent 62%),
+        radial-gradient(920px  480px at 94% -8%,  rgba(244,114,182,.085), transparent 62%),
+        radial-gradient(760px  440px at 48% 112%, rgba(94,234,212,.055), transparent 62%),
+        var(--bg);
     }
-    hr { border-color: var(--line) !important; margin: 18px 0 !important; }
-    ::selection { background: var(--gold-dim); }
+    .block-container{padding-top:2.1rem;padding-bottom:4rem;max-width:1520px}
+    #MainMenu, footer, header[data-testid="stHeader"]{background:transparent}
+    h1,h2,h3{font-family:'Inter Tight',sans-serif!important;font-weight:600!important;
+             letter-spacing:-.015em!important}
+
+    /* ── CTA : dégradé menthe → azur → fuchsia ─────────────────── */
+    .stButton>button{
+      background:linear-gradient(94deg,#5eead4 0%,#60a5fa 46%,#f472b6 100%)!important;
+      color:#07111c!important;border:none!important;
+      font-family:'Inter Tight',sans-serif!important;font-weight:600!important;
+      font-size:13px!important;letter-spacing:.16em!important;text-transform:uppercase!important;
+      border-radius:12px!important;padding:14px 0!important;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.22),
+                 0 10px 30px -14px rgba(96,165,250,.85)!important;
+      transition:transform .16s cubic-bezier(.2,.8,.2,1),box-shadow .18s ease,filter .18s ease!important;
+    }
+    .stButton>button:hover{
+      transform:translateY(-1.5px)!important;filter:saturate(1.1) brightness(1.04)!important;
+      box-shadow:0 16px 38px -14px rgba(244,114,182,.6),
+                 inset 0 1px 0 rgba(255,255,255,.28)!important;
+    }
+    .stButton>button:active{transform:translateY(0)!important}
+
+    /* ── Contrôles ─────────────────────────────────────────────── */
+    .stSelectbox label, .stToggle label{
+      color:var(--muted)!important;font-size:10.5px!important;font-weight:600!important;
+      letter-spacing:.13em!important;text-transform:uppercase!important;
+    }
+    .stSelectbox div[data-baseweb="select"]>div{
+      background:rgba(20,25,38,.72)!important;border:1px solid var(--line)!important;
+      border-radius:11px!important;min-height:44px!important;
+      transition:border-color .16s ease, box-shadow .16s ease!important;
+    }
+    .stSelectbox div[data-baseweb="select"]>div:hover{border-color:var(--line-2)!important}
+    .stSelectbox div[data-baseweb="select"]>div:focus-within{
+      border-color:rgba(96,165,250,.65)!important;
+      box-shadow:0 0 0 3px rgba(96,165,250,.12)!important;
+    }
+    .stSelectbox div[data-baseweb="select"] *{color:var(--ink)!important;font-size:14px!important}
+    div[data-baseweb="popover"] ul{background:var(--surface)!important;
+      border:1px solid var(--line)!important;border-radius:11px!important}
+    div[data-baseweb="popover"] li:hover{background:var(--surface-3)!important}
+
+    /* ── Expander / légende ────────────────────────────────────── */
+    [data-testid="stExpander"]{
+      background:linear-gradient(180deg,rgba(20,25,38,.7),rgba(14,18,32,.7))!important;
+      border:1px solid var(--line)!important;border-radius:14px!important;overflow:hidden!important;
+    }
+    [data-testid="stExpander"] summary{
+      color:var(--ink-2)!important;font-size:12px!important;font-weight:600!important;
+      letter-spacing:.1em!important;text-transform:uppercase!important;
+    }
+    [data-testid="stExpander"] table{border-collapse:collapse!important;font-size:13px!important}
+    [data-testid="stExpander"] th{
+      color:var(--muted)!important;font-size:10.5px!important;text-transform:uppercase!important;
+      letter-spacing:.1em!important;border-bottom:1px solid var(--line)!important;
+      background:transparent!important;padding:9px 12px!important;text-align:left!important;
+    }
+    [data-testid="stExpander"] td{
+      color:var(--ink-2)!important;border-bottom:1px solid rgba(28,34,51,.6)!important;
+      padding:9px 12px!important;
+    }
+    [data-testid="stExpander"] code{
+      background:rgba(96,165,250,.09)!important;color:var(--azure-2)!important;
+      font-family:'JetBrains Mono',monospace!important;font-size:11.5px!important;
+      border-radius:5px!important;padding:1px 5px!important;
+    }
+
+    hr{border:none!important;height:1px!important;
+       background:linear-gradient(90deg,transparent,var(--line) 12%,var(--line) 88%,transparent)!important;
+       margin:20px 0!important}
+    ::selection{background:rgba(167,139,250,.28)}
+    ::-webkit-scrollbar{height:9px;width:9px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:var(--surface-3);border-radius:9px}
+    ::-webkit-scrollbar-thumb:hover{background:var(--line-2)}
+
+    /* ── Grille KPI ────────────────────────────────────────────── */
+    .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+              gap:12px;margin:6px 0 26px}
+    .kpi{position:relative;background:linear-gradient(168deg,rgba(20,25,38,.85),rgba(13,17,30,.85));
+         border:1px solid var(--line);border-radius:15px;padding:15px 16px 14px;overflow:hidden;
+         transition:border-color .18s ease,transform .18s cubic-bezier(.2,.8,.2,1)}
+    .kpi:hover{transform:translateY(-2px);border-color:var(--line-2)}
+    .kpi::before{content:"";position:absolute;top:0;left:16px;right:16px;height:1.5px;
+                 background:var(--acc);border-radius:2px;opacity:.9}
+    .kpi::after{content:"";position:absolute;top:-42px;right:-42px;width:104px;height:104px;
+                border-radius:50%;background:var(--acc);opacity:.085;filter:blur(14px)}
+    .kpi-l{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px;
+           font-weight:600;letter-spacing:.14em;text-transform:uppercase}
+    .kpi-v{font-family:'JetBrains Mono',monospace;font-size:29px;font-weight:500;
+           color:var(--ink);line-height:1.15;margin-top:9px;font-variant-numeric:tabular-nums}
+    .kpi-dim .kpi-v{color:var(--muted-2)}
+
+    @keyframes bs-breathe{0%,100%{transform:scale(1);opacity:.4}50%{transform:scale(1.55);opacity:0}}
+    @keyframes bs-ping{0%,100%{opacity:1}50%{opacity:.35}}
+    .bs-pulse{animation:bs-breathe 2.4s cubic-bezier(.2,.6,.3,1) infinite}
+    .bs-dot{animation:bs-ping 1.9s ease-in-out infinite}
     </style>
     """, unsafe_allow_html=True)
 
     # Killzone active — calculée une seule fois
-    kz_now  = get_current_killzone()
-    kz_html = (f'<span style="display:inline-flex;align-items:center;gap:6px;'
-               f'padding:4px 10px 4px 8px;border-radius:20px;'
-               f'background:rgba(34,211,138,0.1);border:1px solid rgba(34,211,138,0.3);'
-               f'margin-left:12px;vertical-align:middle">'
-               f'<span style="width:6px;height:6px;border-radius:50%;background:#22d38a;'
-               f'box-shadow:0 0 6px #22d38a;display:inline-block"></span>'
-               f'<span style="font-size:12px;font-family:\'Space Grotesk\',sans-serif;'
-               f'color:#22d38a;font-weight:600">{killzone_badge(kz_now)}</span>'
-               f'</span>'
-               if kz_now else "")
+    kz_now = get_current_killzone()
+    if kz_now:
+        _kc = killzone_color(kz_now)
+        kz_html = (
+            f'<span style="display:inline-flex;align-items:center;gap:7px;margin-left:14px;'
+            f'padding:5px 11px 5px 9px;border-radius:30px;vertical-align:middle;'
+            f'background:linear-gradient(90deg,{_kc}1f,{_kc}0a);'
+            f'border:1px solid {_kc}3d">'
+            f'<span class="bs-dot" style="width:5px;height:5px;border-radius:50%;'
+            f'background:{_kc};box-shadow:0 0 8px {_kc}"></span>'
+            f'<span style="font-size:10px;font-weight:600;letter-spacing:.15em;'
+            f'color:{_kc}">{killzone_badge(kz_now)}</span></span>'
+        )
+    else:
+        kz_html = ""
 
     st.markdown(f"""
-    <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px">
-      <div style="position:relative;width:44px;height:44px;flex-shrink:0">
-        <div style="position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--gold)"></div>
-        <div style="position:absolute;inset:9px;border-radius:50%;border:1.5px solid var(--gold);opacity:.55"></div>
-        <div style="position:absolute;top:50%;left:-2px;right:-2px;height:1px;background:var(--gold)"></div>
-        <div style="position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:var(--gold)"></div>
-        <div style="position:absolute;inset:19px;border-radius:50%;background:var(--gold);
-                    box-shadow:0 0 10px var(--gold)"></div>
+    <div style="display:flex;align-items:center;gap:17px;margin-bottom:18px">
+      <div style="position:relative;width:48px;height:48px;flex-shrink:0">
+        <svg viewBox="0 0 48 48" width="48" height="48" fill="none">
+          <defs>
+            <linearGradient id="bsg" x1="4" y1="4" x2="44" y2="44">
+              <stop offset="0%"   stop-color="#5eead4"/>
+              <stop offset="52%"  stop-color="#60a5fa"/>
+              <stop offset="100%" stop-color="#f472b6"/>
+            </linearGradient>
+          </defs>
+          <circle cx="24" cy="24" r="21" stroke="url(#bsg)" stroke-width="1.3" opacity=".38"/>
+          <circle cx="24" cy="24" r="13.5" stroke="url(#bsg)" stroke-width="1.3" opacity=".8"/>
+          <path d="M24 1.5v9M24 37.5v9M1.5 24h9M37.5 24h9"
+                stroke="url(#bsg)" stroke-width="1.3" stroke-linecap="round" opacity=".6"/>
+          <circle cx="24" cy="24" r="3.6" fill="url(#bsg)"/>
+        </svg>
+        <div class="bs-pulse" style="position:absolute;inset:6px;border-radius:50%;
+             border:1px solid #60a5fa"></div>
       </div>
       <div>
-        <h1 style="margin:0;font-size:26px;color:var(--ink);font-weight:600;letter-spacing:-.01em">
-          Bluestar Sniper <span style="color:var(--muted);font-weight:500;font-size:16px">V16</span>{kz_html}
+        <h1 style="margin:0;font-size:27px;color:var(--ink);font-weight:600;letter-spacing:-.02em">
+          Bluestar <span style="font-weight:400;color:var(--ink-2)">Sniper</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;
+                color:var(--iris);background:rgba(167,139,250,.1);border:1px solid rgba(167,139,250,.22);
+                padding:3px 8px;border-radius:7px;margin-left:9px;vertical-align:middle">V16</span>
+          {kz_html}
         </h1>
-        <p style="margin:2px 0 0;color:var(--muted);font-family:'Space Grotesk',sans-serif;font-size:13px">
-          HMA 20 · M15 · Multi-timeframe · ADR quotidien · Force H4 / H1 / M15 · FVG
+        <p style="margin:5px 0 0;color:var(--muted);font-size:12px;letter-spacing:.05em">
+          HMA 20 · M15 &nbsp;<span style="color:var(--muted-2)">/</span>&nbsp; Multi-timeframe
+          &nbsp;<span style="color:var(--muted-2)">/</span>&nbsp; Zones ICT
+          &nbsp;<span style="color:var(--muted-2)">/</span>&nbsp; FVG &amp; Currency Strength
         </p>
       </div>
     </div>
@@ -1311,23 +1421,28 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 
     if not run:
         st.markdown("""
-        <div style="text-align:center;padding:72px 0 60px">
-          <div style="position:relative;width:64px;height:64px;margin:0 auto 20px">
-            <div class="reticle-pulse" style="position:absolute;inset:0;border-radius:50%;
-                        border:1.5px solid var(--gold);opacity:.35"></div>
-            <div style="position:absolute;inset:14px;border-radius:50%;border:1.5px solid var(--gold);opacity:.6"></div>
-            <div style="position:absolute;top:50%;left:0;right:0;height:1px;background:var(--gold);opacity:.4"></div>
-            <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--gold);opacity:.4"></div>
-            <div style="position:absolute;inset:29px;border-radius:50%;background:var(--gold)"></div>
+        <div style="text-align:center;padding:86px 0 74px">
+          <div style="position:relative;width:72px;height:72px;margin:0 auto 26px">
+            <div class="bs-pulse" style="position:absolute;inset:0;border-radius:50%;
+                 border:1px solid #60a5fa"></div>
+            <svg viewBox="0 0 72 72" width="72" height="72" fill="none">
+              <defs><linearGradient id="bse" x1="8" y1="8" x2="64" y2="64">
+                <stop offset="0%" stop-color="#5eead4"/><stop offset="50%" stop-color="#60a5fa"/>
+                <stop offset="100%" stop-color="#f472b6"/></linearGradient></defs>
+              <circle cx="36" cy="36" r="30" stroke="url(#bse)" stroke-width="1.1" opacity=".3"/>
+              <circle cx="36" cy="36" r="18" stroke="url(#bse)" stroke-width="1.1" opacity=".6"/>
+              <path d="M36 2v12M36 58v12M2 36h12M58 36h12" stroke="url(#bse)"
+                    stroke-width="1.1" stroke-linecap="round" opacity=".5"/>
+              <circle cx="36" cy="36" r="4.5" fill="url(#bse)"/>
+            </svg>
           </div>
-          <div style="font-family:'Space Grotesk',sans-serif;font-size:14px;color:var(--muted)">
-            En attente — lance le scanner pour voir les signaux actifs
+          <div style="font-size:15px;color:var(--ink-2);font-weight:500">
+            Scanner en veille
+          </div>
+          <div style="font-size:12.5px;color:var(--muted-2);margin-top:7px;letter-spacing:.04em">
+            33 instruments · 6 timeframes · lance l'analyse pour révéler les setups actifs
           </div>
         </div>
-        <style>
-        @keyframes reticle-breathe { 0%,100%{transform:scale(1);opacity:.35} 50%{transform:scale(1.25);opacity:0} }
-        .reticle-pulse { animation: reticle-breathe 2.2s ease-out infinite; }
-        </style>
         """, unsafe_allow_html=True)
         return
 
@@ -1448,236 +1563,255 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     shorts  = len(df[df["Signal"].str.contains("SHORT", na=False) & ~df["Signal"].str.contains("expiré")])
     max_mom = len(df[df.get("Momentum", 0) == 3]) if "Momentum" in df.columns else 0
 
-    mc = st.columns(6)
-    with mc[0]: st.metric("💎 Signaux A+", a_plus)
-    with mc[1]: st.metric("🥇 Signaux A",  a_grade)
-    with mc[2]: st.metric("👀 Watch B/B+", b_watch)
-    with mc[3]: st.metric("▲ LONG actifs", longs)
-    with mc[4]: st.metric("▼ SHORT actifs", shorts)
-    with mc[5]: st.metric("■■■ Force max", max_mom)
-
-    st.markdown("<br>", unsafe_allow_html=True)
+    _kpis = [
+        ("A+ PREMIUM",  a_plus,  "#a78bfa", ICON_TARGET),
+        ("GRADE A",     a_grade, "#60a5fa", ICON_TARGET),
+        ("WATCHLIST",   b_watch, "#7a84a0", ICON_CLOCK),
+        ("LONG ACTIFS", longs,   "#5eead4", icon_arrow(True, 12)),
+        ("SHORT ACTIFS",shorts,  "#f472b6", icon_arrow(False, 12)),
+        ("FORCE MAX",   max_mom, "#f9a8d4", ICON_BOLT),
+    ]
+    _cards = "".join(
+        f'<div class="kpi{"" if v else " kpi-dim"}" style="--acc:{c}">'
+        f'<div class="kpi-l"><span style="color:{c};display:inline-flex">{ic}</span>{lbl}</div>'
+        f'<div class="kpi-v">{v}</div></div>'
+        for lbl, v, c, ic in _kpis
+    )
+    st.markdown(f'<div class="kpi-grid">{_cards}</div>', unsafe_allow_html=True)
 
     # ── STYLES ───────────────────────────────────────────────────
+    # ── PALETTE DES GRADES ───────────────────────────────────────
     GRADE_STYLE = {
-        "A+": {"color": "#f0a832", "bg": "rgba(240,168,50,0.06)",  "label": "A+"},
-        "A":  {"color": "#c99a5b", "bg": "rgba(201,154,91,0.04)", "label": "A"},
-        "B+": {"color": "#5b9fd6", "bg": "transparent",            "label": "B+"},
-        "B":  {"color": "#6b7280", "bg": "transparent",            "label": "B"},
-        "C":  {"color": "#454b5a", "bg": "transparent",            "label": "C"},
+        "A+": {"color": "#c4b5fd", "line": "#a78bfa", "bg": "rgba(167,139,250,.055)", "label": "A+"},
+        "A":  {"color": "#9cc7fd", "line": "#60a5fa", "bg": "rgba(96,165,250,.04)",   "label": "A"},
+        "B+": {"color": "#a9f3e6", "line": "#5eead4", "bg": "transparent",            "label": "B+"},
+        "B":  {"color": "#8b95af", "line": "#49516a", "bg": "transparent",            "label": "B"},
+        "C":  {"color": "#5b6480", "line": "#333b52", "bg": "transparent",            "label": "C"},
     }
 
-    def sig_style(s):
-        if "LONG"  in s and "expiré" not in s:
-            return "color:#22d38a;font-weight:700;font-size:16px"
-        if "SHORT" in s and "expiré" not in s:
-            return "color:#ff5470;font-weight:700;font-size:16px"
-        return "color:#454b5a;font-size:12px"
+    def fresh_cell(fresh_str: str, is_fresh: bool) -> str:
+        txt = fresh_str.replace("⚡", "").replace("⏳", "").strip()
+        col = "#5eead4" if is_fresh else "#49516a"
+        ico = ICON_BOLT if is_fresh else ICON_CLOCK
+        dot = (f'<span class="bs-dot" style="width:4px;height:4px;border-radius:50%;'
+               f'background:{col};box-shadow:0 0 7px {col}"></span>' if is_fresh else "")
+        bg  = "rgba(94,234,212,.09)" if is_fresh else "rgba(73,81,106,.09)"
+        bd  = "rgba(94,234,212,.24)" if is_fresh else "rgba(73,81,106,.22)"
+        return (f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
+                f'background:{bg};border:1px solid {bd};padding:4px 10px;border-radius:30px;'
+                f'font-family:\'JetBrains Mono\',monospace;font-size:11.5px;font-weight:500;'
+                f'white-space:nowrap">{dot}<span style="display:inline-flex">{ico}</span>{txt}</span>')
 
-    def bias_daily_label(b):
-        if b == "STRONG BULLISH": return "▲▲ Strong bull"
-        if b == "BULLISH":        return "▲ Bull"
-        if b == "STRONG BEARISH": return "▼▼ Strong bear"
-        if b == "BEARISH":        return "▼ Bear"
-        return "— Neutral"
+    def sig_cell(sig: str, is_bull: bool) -> str:
+        expired = "expiré" in sig
+        col     = ("#5eead4" if is_bull else "#f472b6") if not expired else "#49516a"
+        word    = "LONG" if is_bull else "SHORT"
+        if expired:
+            return (f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
+                    f'font-size:11.5px;letter-spacing:.1em;font-weight:600">'
+                    f'<span style="display:inline-flex;opacity:.7">{icon_arrow(is_bull, 10)}</span>'
+                    f'{word} · EXPIRÉ</span>')
+        return (f'<span style="display:inline-flex;align-items:center;gap:7px;color:{col};'
+                f'background:{col}14;border:1px solid {col}33;padding:5px 12px 5px 10px;'
+                f'border-radius:9px;font-size:13px;font-weight:700;letter-spacing:.09em;'
+                f'box-shadow:0 0 22px -10px {col}">'
+                f'<span style="display:inline-flex">{icon_arrow(is_bull, 12)}</span>{word}</span>')
 
-    def bias_daily_style(b):
-        if "STRONG BULLISH" in b: return "color:#22d38a;font-weight:700;font-size:14px"
-        if "BULLISH"        in b: return "color:#5bb98a;font-weight:600;font-size:14px"
-        if "STRONG BEARISH" in b: return "color:#ff5470;font-weight:700;font-size:14px"
-        if "BEARISH"        in b: return "color:#d3708a;font-weight:600;font-size:14px"
-        return "color:#6b7280;font-size:14px"
+    BIAS_MAP = {
+        "STRONG BULLISH": ("Strong bull", "#5eead4", 2, True),
+        "BULLISH":        ("Bull",        "#a9f3e6", 1, True),
+        "STRONG BEARISH": ("Strong bear", "#f472b6", 2, False),
+        "BEARISH":        ("Bear",        "#f9a8d4", 1, False),
+    }
 
-    def zone_style(z):
-        if "DISCOUNT" in z: return "color:#5b9fd6;font-weight:600"
-        if "PREMIUM"  in z: return "color:#f0a832;font-weight:600"
-        if "EXT HIGH" in z: return "color:#ff5470;font-weight:600;font-style:italic"
-        if "EXT LOW"  in z: return "color:#5bc8e8;font-weight:600;font-style:italic"
-        return "color:#6b7280"
+    def bias_cell(b: str) -> str:
+        if b not in BIAS_MAP:
+            return ('<span style="color:#49516a;font-size:13px;letter-spacing:.04em">'
+                    '— &nbsp;Neutral</span>')
+        label, col, strength, up = BIAS_MAP[b]
+        arrows = "".join(f'<span style="display:inline-flex">{icon_arrow(up, 10)}</span>'
+                         for _ in range(strength))
+        weight = 700 if strength == 2 else 600
+        return (f'<span style="display:inline-flex;align-items:center;gap:2px;color:{col};'
+                f'font-size:13.5px;font-weight:{weight};letter-spacing:.01em">'
+                f'{arrows}<span style="margin-left:5px">{label}</span></span>')
 
-    def fresh_style(f):
-        return "color:#f0a832;font-weight:700" if "⚡" in f else "color:#454b5a"
+    ZONE_MAP = {
+        "DISCOUNT":  ("#60a5fa", "rgba(96,165,250,.11)",  "rgba(96,165,250,.26)"),
+        "PREMIUM":   ("#f9a8d4", "rgba(249,168,212,.11)", "rgba(249,168,212,.26)"),
+        "EXT HIGH":  ("#f472b6", "rgba(244,114,182,.13)", "rgba(244,114,182,.34)"),
+        "EXT LOW":   ("#5eead4", "rgba(94,234,212,.13)",  "rgba(94,234,212,.34)"),
+        "EQUILIBRE": ("#7a84a0", "rgba(122,132,160,.08)", "rgba(122,132,160,.2)"),
+    }
+
+    def zone_cell(z: str, mn_bonus: bool) -> str:
+        col, bg, bd = ZONE_MAP.get(z, ZONE_MAP["EQUILIBRE"])
+        moon = (f'<span style="color:#c4b5fd;display:inline-flex;margin-left:7px" '
+                f'title="Confluence midnight open">{ICON_MOON}</span>' if mn_bonus else "")
+        return (f'<span style="display:inline-flex;align-items:center">'
+                f'<span style="color:{col};background:{bg};border:1px solid {bd};'
+                f'padding:4px 10px;border-radius:7px;font-size:10.5px;font-weight:700;'
+                f'letter-spacing:.11em;white-space:nowrap">{z}</span>{moon}</span>')
 
     def score_bar(score):
         """Score négatif possible (malus ADR/Bias) — affiché tel quel."""
-        if score >= 70:
-            color, glow = "#f0a832", "0 0 8px rgba(240,168,50,.45)"
+        if score >= 85:
+            grad, col, glow = "linear-gradient(90deg,#60a5fa,#a78bfa 55%,#f472b6)", "#c4b5fd", "0 0 14px -2px rgba(167,139,250,.9)"
+        elif score >= 70:
+            grad, col, glow = "linear-gradient(90deg,#5eead4,#60a5fa)", "#9cc7fd", "0 0 12px -3px rgba(96,165,250,.8)"
+        elif score >= 55:
+            grad, col, glow = "linear-gradient(90deg,#3f6f8f,#5eead4)", "#a9f3e6", "none"
         elif score >= 40:
-            color, glow = "#5b9fd6", "none"
+            grad, col, glow = "linear-gradient(90deg,#39405a,#7a84a0)", "#8b95af", "none"
         else:
-            color, glow = "#6b7280", "none"
-        width = max(4, min(score, 103) / 103 * 100) if score >= 0 else 4
-        label = str(score)
-        return f"""<div style="display:flex;align-items:center;gap:9px">
-          <div style="width:56px;height:5px;background:var(--surface-2);border-radius:3px;overflow:hidden">
-            <div style="width:{width}%;height:100%;background:{color};border-radius:3px;box-shadow:{glow}"></div>
-          </div>
-          <span style="color:{color};font-weight:700;font-size:14.5px;font-family:'IBM Plex Mono',monospace">{label}</span>
-        </div>"""
+            grad, col, glow = "linear-gradient(90deg,#2a3049,#49516a)", "#5b6480", "none"
+        width = max(3, min(score, 103) / 103 * 100) if score >= 0 else 3
+        return (f'<div style="display:flex;align-items:center;gap:11px">'
+                f'<span style="color:{col};font-weight:600;font-size:16px;'
+                f'font-family:\'JetBrains Mono\',monospace;font-variant-numeric:tabular-nums;'
+                f'min-width:30px;text-align:right">{score}</span>'
+                f'<div style="width:62px;height:4px;background:rgba(40,48,73,.85);'
+                f'border-radius:3px;overflow:hidden">'
+                f'<div style="width:{width}%;height:100%;background:{grad};'
+                f'border-radius:3px;box-shadow:{glow}"></div></div></div>')
 
     def adr_cell(v, label="ADR", consumed: float | None = None):
         if v is None:
-            return '<span style="color:#454b5a">—</span>'
-
+            return '<span style="color:#3b4258">—</span>'
         formatted = f"{v:.5f}" if v < 1.0 else f"{v:.2f}"
-        tag_color = "#5b9fd6" if label == "ADR" else "#c99a5b"
-
-        tag_html = (
-            f'<span style="color:{tag_color};font-size:10px;font-family:\'IBM Plex Mono\','
-            f'monospace;margin-right:4px;font-weight:600">{label}</span>'
-            f'<span style="color:#9099ab;font-family:\'IBM Plex Mono\','
-            f'monospace;font-size:13px">{formatted}</span>'
-        )
-
+        tag_color = "#60a5fa" if label == "ADR" else "#c4b5fd"
+        head = (f'<div style="display:flex;align-items:baseline;gap:7px">'
+                f'<span style="color:{tag_color};font-size:9px;font-weight:700;letter-spacing:.12em;'
+                f'background:{tag_color}14;border:1px solid {tag_color}2e;padding:2px 6px;'
+                f'border-radius:5px">{label}</span>'
+                f'<span style="color:var(--ink-2);font-family:\'JetBrains Mono\',monospace;'
+                f'font-size:13px;font-variant-numeric:tabular-nums">{formatted}</span></div>')
         if consumed is None or (isinstance(consumed, float) and np.isnan(consumed)):
-            return tag_html
-
+            return head
         consumed = float(consumed)
-
-        if consumed < 40:
-            bar_color = "#22d38a"
-            pct_color = "#22d38a"
-        elif consumed < 70:
-            bar_color = "#f0a832"
-            pct_color = "#f0a832"
-        else:
-            bar_color = "#ff5470"
-            pct_color = "#ff5470"
-
-        fill_width = int(min(max(consumed, 0), 100))
-
-        gauge_html = (
-            f'<div style="display:flex;align-items:center;gap:6px;margin-top:4px">'
-            f'<div style="width:48px;height:3px;background:var(--surface-2);border-radius:2px;overflow:hidden">'
-            f'<div style="width:{fill_width}%;height:100%;background:{bar_color};border-radius:2px"></div>'
-            f'</div>'
-            f'<span style="color:{pct_color};font-size:10px;font-family:\'IBM Plex Mono\','
-            f'monospace;font-weight:700">{consumed:.0f}%</span>'
-            f'</div>'
-        )
-
-        return f'<div>{tag_html}{gauge_html}</div>'
+        if   consumed < 40: c = "#5eead4"
+        elif consumed < 70: c = "#fbbf24"
+        else:               c = "#f472b6"
+        fill = int(min(max(consumed, 0), 100))
+        gauge = (f'<div style="display:flex;align-items:center;gap:7px;margin-top:6px">'
+                 f'<div style="width:52px;height:3px;background:rgba(40,48,73,.85);'
+                 f'border-radius:2px;overflow:hidden">'
+                 f'<div style="width:{fill}%;height:100%;background:{c};border-radius:2px;'
+                 f'box-shadow:0 0 8px -2px {c}"></div></div>'
+                 f'<span style="color:{c};font-size:9.5px;font-family:\'JetBrains Mono\',monospace;'
+                 f'font-weight:700">{consumed:.0f}%</span></div>')
+        return f'<div>{head}{gauge}</div>'
 
     def force_cell(momentum_score: int, delta, is_bull: bool) -> str:
-        color    = "#22d38a" if is_bull else "#ff5470"
-        filled   = f'background:{color};border-radius:2px'
-        empty    = 'background:var(--surface-2);border-radius:2px'
-        segments = "".join(
-            f'<div style="width:13px;height:8px;{filled if i < momentum_score else empty}"></div>'
+        col = "#5eead4" if is_bull else "#f472b6"
+        seg = "".join(
+            (f'<div style="width:15px;height:7px;border-radius:2px;background:{col};'
+             f'box-shadow:0 0 9px -2px {col}"></div>') if i < momentum_score else
+            '<div style="width:15px;height:7px;border-radius:2px;background:rgba(40,48,73,.9)"></div>'
             for i in range(3)
         )
-        bars = (f'<div style="display:flex;gap:3px;align-items:center">'
-                f'{segments}</div>')
-
+        bars = f'<div style="display:flex;gap:4px;align-items:center">{seg}</div>'
         if delta is not None:
-            delta_color = ("#22d38a" if delta >= 1.5
-                           else "#ff5470" if delta <= -1.5
-                           else "#6b7280")
-            sign  = "+" if delta > 0 else ""
-            delta_html = (f'<span style="color:{delta_color};font-weight:700;'
-                          f'font-size:12px;font-family:\'IBM Plex Mono\','
-                          f'monospace;margin-left:7px">{sign}{delta:.1f}</span>')
+            dc = ("#5eead4" if delta >= 1.5 else "#f472b6" if delta <= -1.5 else "#7a84a0")
+            sign = "+" if delta > 0 else ""
+            dh = (f'<span style="color:{dc};background:{dc}12;border:1px solid {dc}26;'
+                  f'padding:2px 7px;border-radius:6px;font-weight:700;font-size:11px;'
+                  f'font-family:\'JetBrains Mono\',monospace;margin-left:10px;'
+                  f'font-variant-numeric:tabular-nums">{sign}{delta:.1f}</span>')
         else:
-            delta_html = '<span style="color:#454b5a;margin-left:7px;font-size:11px">n/a</span>'
+            dh = ('<span style="color:#3b4258;margin-left:10px;font-size:10.5px;'
+                  'font-family:\'JetBrains Mono\',monospace">n/a</span>')
+        return f'<div style="display:flex;align-items:center">{bars}{dh}</div>'
 
-        return (f'<div style="display:flex;align-items:center">'
-                f'{bars}{delta_html}</div>')
-
+    # ── TABLEAU ──────────────────────────────────────────────────
     html = """
 <style>
-.sc-wrap{overflow-x:auto;margin-top:4px;border:1px solid var(--line);border-radius:10px}
-.sc-tbl{width:100%;border-collapse:collapse;font-family:'Space Grotesk',sans-serif;font-size:14.5px}
-.sc-tbl thead tr{border-bottom:1px solid var(--line)}
-.sc-tbl th{
-  padding:12px 16px;text-align:left;
-  color:var(--muted);
-  font-size:12.5px;font-weight:500;
-  white-space:nowrap;
-  background:var(--surface);
-}
-.sc-tbl th:first-child{border-radius:10px 0 0 0}
-.sc-tbl th:last-child{border-radius:0 10px 0 0}
-.sc-tbl td{padding:12px 16px;border-bottom:1px solid var(--line);vertical-align:middle;position:relative}
-.sc-tbl tbody tr{transition:background .12s ease}
-.sc-tbl tbody tr:hover td{background:var(--surface-2) !important}
+.sc-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:17px;
+  background:linear-gradient(180deg,rgba(16,20,34,.9),rgba(11,14,25,.9));
+  box-shadow:0 26px 60px -34px rgba(0,0,0,.95)}
+.sc-tbl{width:100%;border-collapse:separate;border-spacing:0;
+  font-family:'Inter Tight',sans-serif;font-size:14px}
+.sc-tbl thead th{
+  padding:14px 18px;text-align:left;white-space:nowrap;
+  color:var(--muted);font-size:9.5px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;
+  background:rgba(20,25,38,.92);border-bottom:1px solid var(--line);
+  position:sticky;top:0;backdrop-filter:blur(9px);z-index:2}
+.sc-tbl td{padding:15px 18px;border-bottom:1px solid rgba(28,34,51,.66);vertical-align:middle}
+.sc-tbl tbody tr{transition:background .14s ease}
+.sc-tbl tbody tr:hover td{background:rgba(26,33,50,.55)}
 .sc-tbl tbody tr:last-child td{border-bottom:none}
-.sc-tbl td:first-child{border-left:3px solid transparent}
-.rail-bull td:first-child{border-left:3px solid #22d38a}
-.rail-bear td:first-child{border-left:3px solid #ff5470}
-.ticker{font-size:19px;font-weight:600;color:var(--ink);white-space:nowrap;font-family:'Space Grotesk',sans-serif}
-.grade-pill{
-  display:inline-block;padding:2px 9px;border-radius:20px;
-  font-size:11.5px;font-weight:600;
-  background:currentColor;margin-left:9px;vertical-align:middle;font-family:'Space Grotesk',sans-serif
-}
-.grade-pill span{color:var(--void);opacity:1}
-.chip{
-  display:inline-block;padding:2px 8px;border-radius:20px;
-  font-size:10.5px;font-weight:600;
-  margin-left:6px;vertical-align:middle
-}
+.sc-tbl td:first-child{position:relative;padding-left:20px}
+.sc-tbl td:first-child::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;
+  border-radius:0 3px 3px 0}
+.rail-bull td:first-child::before{background:linear-gradient(180deg,#5eead4,rgba(94,234,212,.15))}
+.rail-bear td:first-child::before{background:linear-gradient(180deg,#f472b6,rgba(244,114,182,.15))}
+.ticker{font-size:17.5px;font-weight:600;color:var(--ink);white-space:nowrap;letter-spacing:-.01em;
+  font-variant-numeric:tabular-nums}
+.grade-pill{display:inline-block;padding:3px 9px;border-radius:7px;font-size:10.5px;font-weight:700;
+  letter-spacing:.06em;margin-left:11px;vertical-align:middle;font-family:'JetBrains Mono',monospace}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:30px;
+  font-size:9.5px;font-weight:700;letter-spacing:.12em;margin-left:9px;vertical-align:middle}
 </style>
 <div class="sc-wrap"><table class="sc-tbl">
 <thead><tr>
-  <th style="width:96px">Fraîcheur</th>
+  <th style="width:132px">Fraîcheur</th>
   <th>Actif</th>
   <th>Signal</th>
   <th>Biais daily</th>
   <th>Zone</th>
-  <th>Score /103</th>
+  <th style="width:140px">Score /103</th>
   <th>ADR / ATR</th>
   <th>Force</th>
 </tr></thead><tbody>
 """
 
     for _, row in df.iterrows():
-        grade       = str(row.get("Grade", "C"))
-        fresh       = "⚡" in str(row.get("Fraîcheur", ""))
-        gs          = GRADE_STYLE.get(grade, GRADE_STYLE["C"])
-        score       = int(row.get("Score /100", 0))
-        ticker      = str(row.get("Actif + Note", "")).split("  ")[0].strip()
-        sig         = str(row.get("Signal", "—"))
-        adr_v       = row.get("ADR")
-        adr_lbl     = str(row.get("ADR Label", "ADR"))
-        adr_cons    = row.get("ADR Consumed")
-        bias        = str(row.get("Biais Daily", "—"))
-        alignment   = str(row.get("Alignement", "ALIGNED"))
-        zone        = str(row.get("Zone", "—"))
-        fresh_str   = str(row.get("Fraîcheur", "—"))
-        sdelta      = row.get("Strength Δ")
-        momentum    = int(row.get("Momentum", 0))
-        is_bull     = bool(row.get("signal_is_bull", True))
-        mn_bonus    = bool(row.get("Midnight Bonus", False))
+        grade     = str(row.get("Grade", "C"))
+        fresh     = "⚡" in str(row.get("Fraîcheur", ""))
+        gs        = GRADE_STYLE.get(grade, GRADE_STYLE["C"])
+        score     = int(row.get("Score /100", 0))
+        ticker    = str(row.get("Actif + Note", "")).split("  ")[0].strip()
+        sig       = str(row.get("Signal", "—"))
+        adr_v     = row.get("ADR")
+        adr_lbl   = str(row.get("ADR Label", "ADR"))
+        adr_cons  = row.get("ADR Consumed")
+        bias      = str(row.get("Biais Daily", "—"))
+        alignment = str(row.get("Alignement", "ALIGNED"))
+        zone      = str(row.get("Zone", "—"))
+        fresh_str = str(row.get("Fraîcheur", "—"))
+        sdelta    = row.get("Strength Δ")
+        momentum  = int(row.get("Momentum", 0))
+        is_bull   = bool(row.get("signal_is_bull", True))
+        mn_bonus  = bool(row.get("Midnight Bonus", False))
 
-        align_tag = ""
-        if alignment == "COUNTER":
-            align_tag = ('<span class="chip" style="background:rgba(255,84,112,.12);'
-                         'color:#ff5470">⚠ counter</span>')
+        align_tag = (f'<span class="chip" style="background:rgba(244,114,182,.1);'
+                     f'border:1px solid rgba(244,114,182,.26);color:#f472b6">'
+                     f'{ICON_ALERT}COUNTER</span>') if alignment == "COUNTER" else ""
 
-        kz_tag = (f'<span class="chip" style="background:rgba(34,211,138,.12);color:#22d38a">'
-                  f'{killzone_badge(kz_now)}</span>'
-                  if kz_now and fresh else "")
+        if kz_now and fresh:
+            _kc = killzone_color(kz_now)
+            kz_tag = (f'<span class="chip" style="background:{_kc}14;border:1px solid {_kc}2e;'
+                      f'color:{_kc}">{killzone_badge(kz_now)}</span>')
+        else:
+            kz_tag = ""
 
-        mn_tag = ('<span style="font-size:11px;margin-left:6px;vertical-align:middle" '
-                  'title="Confluence midnight open">🌙</span>'
-                  if mn_bonus else "")
-
-        row_bg  = gs["bg"] if fresh and grade in ("A+", "A") else "transparent"
-        rail    = "rail-bull" if is_bull else "rail-bear"
+        row_bg = gs["bg"] if fresh and grade in ("A+", "A") else "transparent"
+        rail   = "rail-bull" if is_bull else "rail-bear"
         row_style = f'background:{row_bg}'
         if fresh and grade == "A+":
-            row_style += ';box-shadow:inset 0 0 24px rgba(240,168,50,.05)'
+            row_style += ';box-shadow:inset 0 0 44px -14px rgba(167,139,250,.22)'
 
         html += f"""<tr class="{rail}" style="{row_style}">
-  <td style="{fresh_style(fresh_str)}">{fresh_str}</td>
+  <td>{fresh_cell(fresh_str, fresh)}</td>
   <td style="white-space:nowrap">
     <span class="ticker">{ticker}</span>
-    <span class="grade-pill" style="color:{gs['color']}"><span>{gs['label']}</span></span>
+    <span class="grade-pill" style="color:{gs['color']};background:{gs['line']}1a;
+          border:1px solid {gs['line']}45">{gs['label']}</span>
     {align_tag}
   </td>
-  <td style="{sig_style(sig)}">{sig}{kz_tag}</td>
-  <td style="{bias_daily_style(bias)}">{bias_daily_label(bias)}</td>
-  <td style="{zone_style(zone)}">{zone}{mn_tag}</td>
+  <td style="white-space:nowrap">{sig_cell(sig, is_bull)}{kz_tag}</td>
+  <td>{bias_cell(bias)}</td>
+  <td>{zone_cell(zone, mn_bonus)}</td>
   <td>{score_bar(score)}</td>
   <td>{adr_cell(adr_v, adr_lbl, consumed=adr_cons)}</td>
   <td>{force_cell(momentum, sdelta, is_bull)}</td>
@@ -1686,11 +1820,22 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     html += "</tbody></table></div>"
     st.markdown(html, unsafe_allow_html=True)
 
+    _kz_foot = (f'<span style="color:{killzone_color(kz_now)}">'
+                f'killzone {killzone_badge(kz_now)} active</span>' if kz_now else
+                '<span style="color:#3b4258">hors killzone</span>')
     st.markdown(f"""
-    <div style="color:var(--muted-2);font-family:'Space Grotesk',sans-serif;font-size:11.5px;
-                text-align:right;margin-top:10px">
-      {len(df)} signal(s) · scanné en {elapsed}s · {datetime.now().strftime('%H:%M:%S')}
-      {'· <span style="color:#22d38a">killzone ' + kz_now + ' active</span>' if kz_now else ''}
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:14px;
+                margin-top:14px;font-size:10.5px;letter-spacing:.1em;font-weight:600;
+                text-transform:uppercase;color:var(--muted-2)">
+      <span>{len(df)} signal(s)</span>
+      <span style="color:#232b40">•</span>
+      <span style="font-family:'JetBrains Mono',monospace;text-transform:none;letter-spacing:.02em">
+        {elapsed}s</span>
+      <span style="color:#232b40">•</span>
+      <span style="font-family:'JetBrains Mono',monospace;text-transform:none;letter-spacing:.02em">
+        {datetime.now().strftime('%H:%M:%S')}</span>
+      <span style="color:#232b40">•</span>
+      {_kz_foot}
     </div>
     """, unsafe_allow_html=True)
 
