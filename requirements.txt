@@ -2,5 +2,3 @@ streamlit>=1.28.0
 pandas>=2.0.0
 numpy>=1.24.0
 oandapyV20>=0.6.3
-scipy>=1.10.0
-matplotlib
