@@ -1177,6 +1177,23 @@ def analyze_asset(access_token: str, environment: str,
 
 
 # ----------------------------------------------------------------
+#  RENDU HTML — utilitaire anti bloc-de-code
+# ----------------------------------------------------------------
+def _html(s: str) -> str:
+    """
+    st.markdown() passe le texte par un parseur Markdown AVANT d'appliquer
+    unsafe_allow_html : toute ligne indentée de 4+ espaces (ou dont l'indentation
+    dépasse significativement celle de ses voisines, ex. une valeur d'attribut qui
+    retourne à la ligne en s'alignant sur le guillemet ouvrant) est interprétée comme
+    un bloc de code préformaté et s'affiche en texte brut au lieu d'être rendue comme
+    HTML. Comme le HTML de ce fichier est écrit avec l'indentation Python normale (pour
+    rester lisible dans le fichier), on retire l'indentation de chaque ligne juste avant
+    le rendu pour éliminer le risque, plutôt que d'aplatir chaque bloc à la main.
+    """
+    return "\n".join(line.lstrip() for line in s.strip("\n").split("\n"))
+
+
+# ----------------------------------------------------------------
 #  INTERFACE STREAMLIT
 # ----------------------------------------------------------------
 def main():
@@ -1186,7 +1203,7 @@ def main():
         initial_sidebar_state="collapsed"
     )
 
-    st.markdown("""
+    st.markdown(_html("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
@@ -1313,7 +1330,7 @@ def main():
     .bs-pulse{animation:bs-breathe 2.4s cubic-bezier(.2,.6,.3,1) infinite}
     .bs-dot{animation:bs-ping 1.9s ease-in-out infinite}
     </style>
-    """, unsafe_allow_html=True)
+    """), unsafe_allow_html=True)
 
     # Killzone active — calculée une seule fois
     kz_now = get_current_killzone()
@@ -1332,7 +1349,7 @@ def main():
     else:
         kz_html = ""
 
-    st.markdown(f"""
+    st.markdown(_html(f"""
     <div style="display:flex;align-items:center;gap:17px;margin-bottom:18px">
       <div style="position:relative;width:48px;height:48px;flex-shrink:0">
         <svg viewBox="0 0 48 48" width="48" height="48" fill="none">
@@ -1360,20 +1377,20 @@ def main():
                 padding:3px 8px;border-radius:7px;margin-left:9px;vertical-align:middle">V16</span>
           {kz_html}
         </h1>
-        <p style="margin:6px 0 0;display:flex;flex-wrap:wrap;align-items:center;gap:9px;
+        <p style="margin:6px 0 0;display:flex;flex-wrap:wrap;align-items:center;gap:6px;
                   color:var(--muted);font-size:12px;letter-spacing:.05em">
           <span>HMA 20 · M15</span>
-          <span style="color:var(--muted-2)">/</span>
+          <span style="color:var(--muted-2);opacity:.6">/</span>
           <span>Multi-timeframe</span>
-          <span style="color:var(--muted-2)">/</span>
+          <span style="color:var(--muted-2);opacity:.6">/</span>
           <span>Zones ICT</span>
-          <span style="color:var(--muted-2)">/</span>
+          <span style="color:var(--muted-2);opacity:.6">/</span>
           <span>FVG &amp; Currency Strength</span>
         </p>
       </div>
     </div>
     <hr>
-    """, unsafe_allow_html=True)
+    """), unsafe_allow_html=True)
 
     missing = [k for k in ("OANDA_ACCESS_TOKEN", "OANDA_ACCOUNT_ID") if k not in st.secrets]
     if missing:
@@ -1425,7 +1442,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     run = st.button("🚀  LANCER LE SCANNER", use_container_width=True)
 
     if not run:
-        st.markdown("""
+        st.markdown(_html("""
         <div style="text-align:center;padding:86px 0 74px">
           <div style="position:relative;width:72px;height:72px;margin:0 auto 26px">
             <div class="bs-pulse" style="position:absolute;inset:0;border-radius:50%;
@@ -1448,7 +1465,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
             33 instruments · 6 timeframes · lance l'analyse pour révéler les setups actifs
           </div>
         </div>
-        """, unsafe_allow_html=True)
+        """), unsafe_allow_html=True)
         return
 
     assets = [
@@ -1828,7 +1845,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     _kz_foot = (f'<span style="color:{killzone_color(kz_now)}">'
                 f'killzone {killzone_badge(kz_now)} active</span>' if kz_now else
                 '<span style="color:#3b4258">hors killzone</span>')
-    st.markdown(f"""
+    st.markdown(_html(f"""
     <div style="display:flex;align-items:center;justify-content:flex-end;gap:14px;
                 margin-top:14px;font-size:10.5px;letter-spacing:.1em;font-weight:600;
                 text-transform:uppercase;color:var(--muted-2)">
@@ -1842,7 +1859,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
       <span style="color:#232b40">•</span>
       {_kz_foot}
     </div>
-    """, unsafe_allow_html=True)
+    """), unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
