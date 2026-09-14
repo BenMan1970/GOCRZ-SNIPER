@@ -1360,10 +1360,15 @@ def main():
                 padding:3px 8px;border-radius:7px;margin-left:9px;vertical-align:middle">V16</span>
           {kz_html}
         </h1>
-        <p style="margin:5px 0 0;color:var(--muted);font-size:12px;letter-spacing:.05em">
-          HMA 20 · M15 &nbsp;<span style="color:var(--muted-2)">/</span>&nbsp; Multi-timeframe
-          &nbsp;<span style="color:var(--muted-2)">/</span>&nbsp; Zones ICT
-          &nbsp;<span style="color:var(--muted-2)">/</span>&nbsp; FVG &amp; Currency Strength
+        <p style="margin:6px 0 0;display:flex;flex-wrap:wrap;align-items:center;gap:9px;
+                  color:var(--muted);font-size:12px;letter-spacing:.05em">
+          <span>HMA 20 · M15</span>
+          <span style="color:var(--muted-2)">/</span>
+          <span>Multi-timeframe</span>
+          <span style="color:var(--muted-2)">/</span>
+          <span>Zones ICT</span>
+          <span style="color:var(--muted-2)">/</span>
+          <span>FVG &amp; Currency Strength</span>
         </p>
       </div>
     </div>
@@ -1627,7 +1632,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     def bias_cell(b: str) -> str:
         if b not in BIAS_MAP:
             return ('<span style="color:#49516a;font-size:13px;letter-spacing:.04em">'
-                    '— &nbsp;Neutral</span>')
+                    '— Neutral</span>')
         label, col, strength, up = BIAS_MAP[b]
         arrows = "".join(f'<span style="display:inline-flex">{icon_arrow(up, 10)}</span>'
                          for _ in range(strength))
