@@ -49,27 +49,41 @@ def is_valid_df(df, min_rows: int = 1) -> bool:
 
 
 # ----------------------------------------------------------------
-#  KILLZONE DETECTOR  —  UTC fixe, DST-proof
+#  KILLZONE DETECTOR  —  DST-aware (corrigé V16.1)
 # ----------------------------------------------------------------
-# Plages en UTC fixe :
-#   London  = 07:00-08:30 UTC  (03:00-04:30 ET)
-#   NY AM   = 13:30-15:00 UTC  (09:30-11:00 ET)
-#   Asia    = 00:00-02:00 UTC
-KILLZONES_UTC = {
-    "London": ((7,  0), (8,  30)),
-    "NY AM":  ((13, 30), (15, 0)),
-    "Asia":   ((0,  0),  (2,  0)),
+# V16 déclarait des plages UTC fixes en commentant "DST-proof" — c'était faux : de
+# novembre à mars, une plage UTC figée dérive d'~1h par rapport à la vraie fenêtre en
+# heure locale. Fenêtres redéfinies en heure NY locale (source de vérité du fichier,
+# déjà utilisée pour midnight_open/adr_consumed) et converties dynamiquement via pytz,
+# qui gère EDT/EST automatiquement :
+#   London  = 03:00-04:30 ET
+#   NY AM   = 09:30-11:00 ET
+#   Asia    = 00:00-02:00 UTC (Tokyo n'observe pas le DST — UTC fixe correct ici)
+KILLZONES_NY_LOCAL = {
+    "London": ((3,  0), (4,  30)),
+    "NY AM":  ((9, 30), (11,  0)),
+}
+KILLZONES_UTC_FIXED = {
+    "Asia": ((0, 0), (2, 0)),
 }
 
 INDICES = {"US30_USD", "NAS100_USD", "DE30_EUR"}
 
 def get_current_killzone() -> str:
-    now_utc = datetime.now(pytz.UTC)
-    t = now_utc.hour * 60 + now_utc.minute
-    for name, (start, end) in KILLZONES_UTC.items():
+    ny_tz  = pytz.timezone("America/New_York")
+    now_ny = datetime.now(ny_tz)
+    t_ny   = now_ny.hour * 60 + now_ny.minute
+    for name, (start, end) in KILLZONES_NY_LOCAL.items():
         s = start[0] * 60 + start[1]
         e = end[0]   * 60 + end[1]
-        if s <= t <= e:
+        if s <= t_ny <= e:
+            return name
+    now_utc = datetime.now(pytz.UTC)
+    t_utc   = now_utc.hour * 60 + now_utc.minute
+    for name, (start, end) in KILLZONES_UTC_FIXED.items():
+        s = start[0] * 60 + start[1]
+        e = end[0]   * 60 + end[1]
+        if s <= t_utc <= e:
             return name
     return ""
 
@@ -298,23 +312,22 @@ def get_tf_trend(df: pd.DataFrame, tf_type: str):
 
 
 def compute_mtf_analysis(dfs: dict):
+    """
+    Retourne (alignment_pct, dominant, results) sur les tendances BRUTES de chaque TF.
+    NB V16.1 : la version précédente calculait un "macro_trend" (M/W/D/4H) pour écraser
+    les tendances 1H/15m avant de les renvoyer dans `results`. alignment_pct/dominant
+    étaient déjà calculés sur les tendances brutes AVANT cette mutation, et aucun
+    consommateur ne lisait `results` muté ("MTF Details" n'est affiché nulle part dans le
+    rendu actuel) : ce filtre macro n'avait donc aucun effet sur aucune sortie du
+    programme. Code mort supprimé plutôt que branché, pour ne pas changer le comportement
+    de scoring existant sans validation ; `results` reflète maintenant fidèlement ce qui
+    est réellement utilisé par alignment_pct/dominant.
+    """
     results = {}
     for tf, df in dfs.items():
         t, s, lbl   = get_tf_trend(df, tf)
         results[tf] = {"trend": t, "strength": s, "label": lbl}
 
-    macro_trend = 0
-    for tf in ("M", "W", "D", "4H"):
-        if tf in results and results[tf]["trend"] != 0:
-            macro_trend = results[tf]["trend"]
-            break
-
-    t1h  = results.get("1H",  {}).get("trend", 0)
-    t15m = results.get("15m", {}).get("trend", 0)
-    f1h  = 0 if (macro_trend != 0 and macro_trend != t1h)  else t1h
-    f15m = 0 if (macro_trend != 0 and macro_trend != t15m) else t15m
-
-    # alignment_pct calculé sur les tendances BRUTES avant mutation
     raw_bull      = sum(TF_WEIGHTS[tf] for tf in TF_WEIGHTS
                         if results.get(tf, {}).get("trend", 0) == 1)
     raw_bear      = sum(TF_WEIGHTS[tf] for tf in TF_WEIGHTS
@@ -322,10 +335,6 @@ def compute_mtf_analysis(dfs: dict):
     alignment_pct = round(max(raw_bull, raw_bear) / TOTAL_WEIGHT * 100)
     dominant      = ("Bullish" if raw_bull > raw_bear
                      else "Bearish" if raw_bear > raw_bull else "Neutral")
-
-    # Mutation post-calcul
-    if "1H"  in results: results["1H"]["trend"]  = f1h
-    if "15m" in results: results["15m"]["trend"] = f15m
 
     return alignment_pct, dominant, results
 
@@ -386,8 +395,13 @@ def get_daily_bias_v2(df_d: pd.DataFrame, current_price: float = None):
         df_copy = df_d.copy()
         if df_copy.index.tz is None:
             df_copy.index = df_copy.index.tz_localize("UTC")
-        # Lundi uniquement (dayofweek == 0), semaine en cours
-        monday_rows = df_copy[df_copy.index.dayofweek == 0]
+        # Lundi = lundi en heure NY, pas en UTC brut : la semaine de trading forex est
+        # définie en heure NY (ouverture dimanche 17h NY). Un dayofweek calculé sur un
+        # index UTC non converti peut capturer la bougie de la mauvaise session selon
+        # l'alignement de compte OANDA (dailyAlignment).
+        ny_tz_wo    = pytz.timezone("America/New_York")
+        idx_ny_wo   = df_copy.index.tz_convert(ny_tz_wo)
+        monday_rows = df_copy[idx_ny_wo.dayofweek == 0]
         current_week_mondays = monday_rows[
             monday_rows.index > (datetime.now(pytz.UTC) - pd.Timedelta(days=7))
             # > strict (au lieu de >=) pour exclure le lundi J-7
@@ -403,9 +417,12 @@ def get_daily_bias_v2(df_d: pd.DataFrame, current_price: float = None):
         logger.warning("get_daily_bias_v2 Weekly Open error: %s", _e)
         detail["Weekly Open"] = "NEUTRAL"
 
-    if is_valid_df(df_d, 2):
-        midpoint = (float(high.iloc[-2]) + float(low.iloc[-2])) / 2
-        if float(close.iloc[-2]) > midpoint:
+    # df_d ne contient que des bougies COMPLETES (fetch_oanda_data filtre sur "complete"),
+    # donc df_d.iloc[-1] est déjà la veille — même convention que pdh/pdl (iloc[-1] plus bas).
+    # Corrigé : utilisait iloc[-2] (avant-veille), incohérent avec PDH/PDL sur le même df_d.
+    if is_valid_df(df_d, 1):
+        midpoint = (float(high.iloc[-1]) + float(low.iloc[-1])) / 2
+        if float(close.iloc[-1]) > midpoint:
             detail["Close J-1"] = "BULLISH"; votes_bull += 1
         else:
             detail["Close J-1"] = "BEARISH"; votes_bear += 1
@@ -436,11 +453,15 @@ def get_daily_bias_v2(df_d: pd.DataFrame, current_price: float = None):
 
     detail["Votes"] = f"{votes_bull}B / {votes_bear}S"
 
-    if   votes_bull >= 5: bias = "STRONG BULLISH"
-    elif votes_bull >= 3: bias = "BULLISH"
-    elif votes_bear >= 5: bias = "STRONG BEARISH"
-    elif votes_bear >= 3: bias = "BEARISH"
-    else:                 bias = "NEUTRAL"
+    # Comparaison relative explicite (corrige l'ancien enchaînement if/elif qui testait
+    # votes_bull>=3 en premier : une égalité 3-3, voire un cas bull=3/bear=4, résolvait
+    # systématiquement en BULLISH indépendamment du camp réellement majoritaire).
+    if votes_bull > votes_bear:
+        bias = "STRONG BULLISH" if votes_bull >= 5 else ("BULLISH" if votes_bull >= 3 else "NEUTRAL")
+    elif votes_bear > votes_bull:
+        bias = "STRONG BEARISH" if votes_bear >= 5 else ("BEARISH" if votes_bear >= 3 else "NEUTRAL")
+    else:
+        bias = "NEUTRAL"
 
     return bias, detail
 
@@ -501,6 +522,10 @@ STRENGTH_PAIRS = [
     "AUD_USD", "USD_CAD", "NZD_USD",
     "EUR_GBP", "EUR_JPY", "EUR_CHF",
     "GBP_JPY", "AUD_JPY", "CAD_JPY", "NZD_JPY",
+    # Ajoutés V16.1 : AUD/CAD/NZD/CHF n'étaient représentés que dans 2 paires chacun
+    # (contre 7 pour USD, 6 pour JPY), ce qui les faisait structurellement toucher les
+    # bornes 0/10 du min-max en premier. Ces 6 croisements sont déjà scannés dans `assets`.
+    "AUD_CAD", "AUD_CHF", "AUD_NZD", "CAD_CHF", "NZD_CAD", "NZD_CHF",
 ]
 
 def compute_currency_strength(dfs_h1: dict) -> dict:
@@ -579,20 +604,26 @@ def compute_momentum_score(df_h4, df_h1, df_m15, signal_is_bull: bool) -> int:
 #  SYSTÈME DE NOTATION  V16
 #  near_pdl / near_pdh non utilisés — supprimés de compute_score
 # ----------------------------------------------------------------
-def compute_score(flip_type, candles_ago,
+def compute_score(flip_type, mins_ago,
                   mtf_pct, mtf_dominant,
                   zone_discount, zone_premium,
                   below_mid, above_mid,
                   in_bull_fvg, in_bear_fvg, fvg_near_bull, fvg_near_bear,
                   adx_val, pdi_val, mdi_val, atr_val, atr_mean,
                   midnight_bonus: bool = False,
-                  adr_consumed: float | None = None):
+                  adr_consumed: float | None = None,
+                  bias_alignment: str = "ALIGNED"):
 
     score        = 0
     score_detail = {}
 
-    if flip_type is not None and candles_ago is not None:
-        mins = candles_ago * 15
+    # mins_ago = temps réel écoulé depuis la clôture de la bougie de flip (calculé par
+    # l'appelant à partir de son horodatage réel, cf. find_last_hma_flip / analyze_asset).
+    # Corrigé V16.1 : remplace l'ancien candles_ago*15, qui supposait à tort que la
+    # dernière bougie M15 = l'instant présent (sous-estimation systématique de 0-15 min)
+    # et perdait tout sens à travers un gap de session (week-end).
+    if flip_type is not None and mins_ago is not None:
+        mins = mins_ago
         if   mins <= 15: pts = 30
         elif mins <= 30: pts = 20
         elif mins <= 45: pts = 10
@@ -663,6 +694,17 @@ def compute_score(flip_type, candles_ago,
     else:
         score_detail["ADR Malus"] = 0
 
+    # Malus biais journalier (V16.1) — bias_alignment était calculé et affiché (tag
+    # "⚠ COUNTER") mais n'entrait dans aucun composant du score : un signal frontalement
+    # contradictoire avec le biais 5 facteurs (qui sert pourtant de filtre de rejet dur
+    # pour NEUTRAL) pouvait porter le grade le plus élevé de la grille. -20 empêche un
+    # signal COUNTER d'atteindre A+ (score max 103-20=83 < seuil 85) sans le rejeter.
+    if bias_alignment == "COUNTER":
+        score -= 20
+        score_detail["Bias Malus"] = -20
+    else:
+        score_detail["Bias Malus"] = 0
+
     if   score >= 85: grade = "A+"
     elif score >= 70: grade = "A"
     elif score >= 55: grade = "B+"
@@ -677,7 +719,10 @@ def compute_score(flip_type, candles_ago,
 # ----------------------------------------------------------------
 def find_last_hma_flip(hma_series, max_lookback=20):
     """
-    candles_ago garanti ≥ 0.
+    candles_ago garanti ≥ 0. Retourne aussi idx_curr, la position entière du flip dans
+    hma_series, pour que l'appelant puisse retrouver l'horodatage réel de la bougie
+    (hma_series.index[idx_curr]) et calculer une fraîcheur en temps réel écoulé plutôt
+    qu'en candles_ago*15 (cf. analyze_asset / compute_score).
     HMA plate (v_curr == v_prev) ignorée pour éviter les faux flips.
     """
     colors = []
@@ -697,8 +742,8 @@ def find_last_hma_flip(hma_series, max_lookback=20):
         _,        col_prev = colors[j + 1]
         if col_curr != col_prev:
             candles_ago = max(0, (n - 1) - idx_curr)
-            return ("BULL" if col_curr == "GREEN" else "BEAR"), candles_ago
-    return None, None
+            return ("BULL" if col_curr == "GREEN" else "BEAR"), candles_ago, idx_curr
+    return None, None, None
 
 
 # ----------------------------------------------------------------
@@ -878,7 +923,7 @@ def analyze_asset(access_token: str, environment: str,
         if hma.isna().iloc[-5:].any():
             return _reject("HMA_NAN")
 
-        flip_type, candles_ago = find_last_hma_flip(hma, max_lookback=20)
+        flip_type, candles_ago, flip_idx = find_last_hma_flip(hma, max_lookback=20)
         if flip_type is None:
             return _reject("NO_HMA_FLIP")
 
@@ -890,7 +935,21 @@ def analyze_asset(access_token: str, environment: str,
         else:
             bias_alignment = "COUNTER"
 
-        mins_ago      = candles_ago * 15
+        # Fraîcheur en temps réel écoulé (corrigé V16.1). L'ancien candles_ago*15
+        # supposait que la dernière bougie M15 = l'instant présent (sous-estimation
+        # systématique de 0-15 min) et perdait tout sens à travers un gap de session
+        # (ex. ouverture dominicale : affichait ~45 min pour un flip vieux de 48h).
+        # "time" OANDA = début de bougie → on ajoute 15 min pour obtenir la clôture réelle.
+        try:
+            flip_open_time = hma.index[flip_idx]
+            if flip_open_time.tz is None:
+                flip_open_time = flip_open_time.tz_localize("UTC")
+            flip_close_time = flip_open_time + pd.Timedelta(minutes=15)
+            mins_ago = max(0, int((datetime.now(pytz.UTC) - flip_close_time).total_seconds() // 60))
+        except Exception as _e:
+            logger.warning("[%s] real freshness calc error: %s", ticker, _e)
+            mins_ago = candles_ago * 15  # fallback si l'horodatage est indisponible
+
         freshness_str = f"⚡ {mins_ago} min" if mins_ago <= freshness_limit_min else f"⏳ {mins_ago} min"
         signal_fresh  = mins_ago <= freshness_limit_min
 
@@ -964,10 +1023,20 @@ def analyze_asset(access_token: str, environment: str,
             else:
                 zone_label = "EQUILIBRE"
 
-            zone_discount = in_discount
-            zone_premium  = in_premium
-            below_mid     = in_discount
-            above_mid     = in_premium
+            # Zone de scoring dérivée du MÊME label que celui affiché, mutuellement
+            # exclusive (corrigé V16.1). Avant ce correctif :
+            # (a) in_premium/in_discount pouvaient rester vrais simultanément avec
+            #     in_extended_low/high quand midnight_open sort du range [pdl, pdh]
+            #     (ex. gap) → score et label affiché se contredisaient (cf. audit) ;
+            # (b) en configuration normale, price < pdl (EXT LOW) viole systématiquement
+            #     price >= pdl exigé par in_discount → une zone EXT LOW/HIGH, pourtant la
+            #     plus extrême, ne recevait 0 pt de la composante Zone au lieu d'être
+            #     traitée comme l'extension logique du discount/premium (cohérent ICT :
+            #     au-delà du PDH = premium extrême, au-delà du PDL = discount extrême).
+            zone_premium  = zone_label in ("EXT HIGH", "PREMIUM")
+            zone_discount = zone_label in ("EXT LOW",  "DISCOUNT")
+            above_mid     = zone_premium
+            below_mid     = zone_discount
         else:
             d1_mid        = (pdh + pdl) / 2.0
             in_discount   = price < d1_mid
@@ -1007,18 +1076,21 @@ def analyze_asset(access_token: str, environment: str,
             _adr_raw    = compute_adr(df_d, period=14)
             adr_display = round(float(_adr_raw), 5) if not np.isnan(_adr_raw) else None
             adr_label   = "ADR"
-            adr_consumed = compute_adr_consumed(df_m15, adr_display)
+            # Valeur brute (non arrondie) passée au calcul métier — corrigé V16.1, la
+            # version précédente réinjectait adr_display (arrondi pour l'affichage).
+            adr_consumed = compute_adr_consumed(df_m15, float(_adr_raw) if not np.isnan(_adr_raw) else None)
             if adr_consumed is not None and np.isnan(adr_consumed):
                 adr_consumed = None
 
         score, grade, score_detail = compute_score(
-            flip_type, candles_ago, mtf_pct, mtf_dominant,
+            flip_type, mins_ago, mtf_pct, mtf_dominant,
             zone_discount, zone_premium,
             below_mid, above_mid,
             in_bull_fvg, in_bear_fvg, fvg_near_bull, fvg_near_bear,
             adx_val_score, pdi_val, mdi_val, atr_val, atr_mean,
             midnight_bonus=midnight_bonus,
             adr_consumed=adr_consumed,
+            bias_alignment=bias_alignment,
         )
 
         strength_delta = None
@@ -1157,14 +1229,17 @@ def main():
         st.markdown("""
 | Critère | Max | Détail |
 |---|---|---|
-| **Trigger HMA flip** | 30 pts | ≤15 min = 30 · ≤30 min = 20 · ≤45 min = 10 · >45 min = 0 |
+| **Trigger HMA flip** | 30 pts | ≤15 min = 30 · ≤30 min = 20 · ≤45 min = 10 · >45 min = 0 (fraîcheur = temps réel écoulé) |
 | **MTF Alignment** | 25 pts | ≥80% = 25 · ≥65% = 18 · ≥50% = 10 · contre-MTF = 0 |
-| **Zone D1** | 15 pts | Discount/Premium = 15 (MO comme équilibre) · Zone seule = 8 |
+| **Zone D1** | 15 pts | Discount/Premium (EXT LOW/HIGH inclus) = 15 · sinon 0 |
 | **Midnight Bonus** | 3 pts | Confluence directionnelle avec MO |
-| **FVG M15** | 15 pts | LuxAlgo exact (mitigation + seuil auto) |
+| **FVG M15** | 15 pts | Variante LuxAlgo (mitigation + seuil auto) |
 | **ADX momentum** | 10 pts | ADX>25+DI ok = 10 · ADX>20+DI ok = 6 |
 | **ATR actif** | 5 pts | ≥ moyenne = 5 · ≥ 50% = 3 |
-| **ADR Malus** | -5 pts | Range journalier > 70% consommé depuis minuit NY |
+| **ADR Malus** | -5 pts | Range journalier > 70% consommé depuis minuit NY (forex/métaux uniquement — non applicable aux indices, notés en ATR) |
+| **Bias Malus** | -20 pts | Signal contraire (⚠ COUNTER) au biais journalier 5 facteurs |
+
+Score max réel = **103** (échelle affichée « /103 », pas /100), plage possible [−25 ; 103].
 
 | Colonne | Description |
 |---|---|
@@ -1266,6 +1341,12 @@ def main():
         st.warning("**Aucun signal valide détecté** sur cette session.")
         return
 
+    # Recalculé après la fin du scan (corrigé V16.1) — la valeur capturée avant le scan
+    # (l.1183, purement décorative pour l'en-tête pré-scan) pouvait dater de 30-60s et
+    # être utilisée telle quelle pour le badge de chaque ligne et le pied de tableau,
+    # ratant une bascule de fenêtre survenue pendant le scan.
+    kz_now = get_current_killzone()
+
     df = pd.DataFrame(results)
 
     grade_order = {"A+": 5, "A": 4, "B+": 3, "B": 2, "C": 1}
@@ -1283,7 +1364,9 @@ def main():
         s     = row["Score /100"]
         m     = row["MTF Pct"]
         mom   = row.get("Momentum", 0)
-        return (-fresh, -g, -mom, -s, -m)
+        # Score avant Momentum (corrigé V16.1) — l'ordre précédent (-mom avant -s)
+        # contredisait la grille affichée, qui met le Score/Grade en avant.
+        return (-fresh, -g, -s, -mom, -m)
 
     df["_sk"] = df.apply(sort_key, axis=1)
     df = df.sort_values("_sk").drop(columns=["_sk"]).reset_index(drop=True)
@@ -1460,7 +1543,7 @@ def main():
   <th>Signal</th>
   <th>Biais Daily</th>
   <th>Zone</th>
-  <th>Score /100</th>
+  <th>Score /103</th>
   <th>ADR / ATR</th>
   <th>Force</th>
 </tr></thead><tbody>
