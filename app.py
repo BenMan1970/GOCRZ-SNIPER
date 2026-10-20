@@ -12,6 +12,7 @@ V16-faithful (V16 table pinned by tests).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 import time
 from collections import Counter
 from datetime import datetime
@@ -19,6 +20,9 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+if TYPE_CHECKING:
+    from bluestar.data import RawTransport
 
 from bluestar import config
 from bluestar.config import GRADE_ORDER
@@ -52,33 +56,53 @@ def _html(s: str) -> str:
 
 
 def load_env() -> tuple[str, str]:
-    """Read OANDA credentials from .env. The token value never leaves here."""
+    """Read OANDA credentials from .env / streamlit secrets / environment.
+
+    Priority: .env file (local dev) > st.secrets (Streamlit Cloud) >
+    process environment. The token value is never rendered or logged.
+    """
+    import os
     from pathlib import Path
 
-    env_file = Path(__file__).resolve().parents[1] / ".env"
     values: dict[str, str] = {}
+    env_file = Path(__file__).resolve().parent / ".env"
     if env_file.exists():
         for line in env_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 values[k.strip()] = v.strip()
+    try:
+        if "OANDA_ACCESS_TOKEN" in st.secrets:
+            values.setdefault(
+                "OANDA_ACCESS_TOKEN", str(st.secrets["OANDA_ACCESS_TOKEN"])
+            )
+            values.setdefault(
+                "OANDA_ENVIRONMENT",
+                str(st.secrets.get("OANDA_ENVIRONMENT", "practice")),
+            )
+    except Exception:
+        pass  # no secrets backend (plain local run) - .env / env vars suffice
+    values.setdefault("OANDA_ACCESS_TOKEN", os.environ.get("OANDA_ACCESS_TOKEN", ""))
+    values.setdefault(
+        "OANDA_ENVIRONMENT", os.environ.get("OANDA_ENVIRONMENT", "practice")
+    )
     token = values.get("OANDA_ACCESS_TOKEN", "")
     env = values.get("OANDA_ENVIRONMENT", "practice")
     if not token:
-        st.error("Credentials OANDA manquantes (.env).")
+        st.error("Credentials OANDA manquantes (.env / secrets / variables).")
         st.stop()
     return token, env
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def cached_strength(token: str, env: str) -> dict:
+def cached_strength(token: str, env: str) -> dict[str, float]:
     """Currency strength, cached 5 min (token used as cache key is NOT shown)."""
     client = OandaClient(RawTransportFor(token, env))
     return strength_from(client)
 
 
-def RawTransportFor(token: str, env: str):
+def RawTransportFor(token: str, env: str) -> "RawTransport":
     from bluestar.data import RawTransport
 
     return RawTransport(token, env, bucket=TokenBucket())
@@ -185,7 +209,7 @@ def score_bar(score: int) -> str:
     )
 
 
-def adr_cell(v, label="ADR", consumed=None):
+def adr_cell(v: float | None, label: str = "ADR", consumed: float | None = None) -> str:
     if v is None:
         return '<span style="color:' + MUTED + '">\u2014</span>'
     formatted = f"{v:.5f}" if v < 1.0 else f"{v:.2f}"
@@ -214,7 +238,7 @@ def adr_cell(v, label="ADR", consumed=None):
     return f"<div>{head}{gauge}</div>"
 
 
-def force_cell(momentum: int, delta, is_bull: bool) -> str:
+def force_cell(momentum: int, delta: float, is_bull: bool) -> str:
     col = TEAL if is_bull else MAGENTA
     seg = "".join(
         (
@@ -246,7 +270,7 @@ def grade_chip(grade: str) -> str:
     )
 
 
-def sort_key(row):
+def sort_key(row: pd.Series) -> tuple[int, int, int, int, int]:
     """V16 order: fresh first, then grade, score, momentum, MTF."""
     fresh = 1 if "\u26a1" in str(row["Fra\u00eecheur"]) else 0
     g = GRADE_ORDER.get(row["Grade"], 0)
