@@ -1,7 +1,6 @@
-# BLUESTAR SNIPER V18 - runtime pins, compatibles Python 3.10 (Streamlit Cloud)
-streamlit==1.65.0
-pandas==2.3.3
-numpy==2.2.6
-requests==2.34.2
-pytz==2026.5
+streamlit>=1.40
+pandas>=2.2
+numpy>=1.26
+requests>=2.32
+pytz
 oandapyV20==0.7.2
