@@ -55,6 +55,33 @@ def _html(s: str) -> str:
     return "\n".join(line.lstrip() for line in s.strip("\n").split("\n"))
 
 
+def _secret_value(
+    st_secrets: object, target: str, _trail: tuple[str, ...] = ()
+) -> str:
+    """Case-insensitive, section-aware lookup in st.secrets.
+
+    Accepts any layout the user might use:
+      OANDA_ACCESS_TOKEN = "..."              (flat, exact)
+      [oanda]  ACCESS_TOKEN = "..."           (section joins the key)
+      oanda_access_token = "..."              (lower-case)
+    """
+    try:
+        items = list(st_secrets.items())  # type: ignore[attr-defined]
+    except Exception:
+        return ""
+    for k, v in items:
+        up = str(k).upper()
+        if isinstance(v, dict):
+            hit = _secret_value(v, target, (*_trail, up))
+            if hit:
+                return hit
+            continue
+        joined = "_".join((*_trail, up))
+        if up == target or joined.endswith(target):
+            return str(v).strip()
+    return ""
+
+
 def load_env() -> tuple[str, str]:
     """Read OANDA credentials from .env / streamlit secrets / environment.
 
@@ -73,29 +100,37 @@ def load_env() -> tuple[str, str]:
                 k, v = line.split("=", 1)
                 values[k.strip()] = v.strip()
     try:
-        if "OANDA_ACCESS_TOKEN" in st.secrets:
-            values.setdefault(
-                "OANDA_ACCESS_TOKEN", str(st.secrets["OANDA_ACCESS_TOKEN"])
-            )
-            values.setdefault(
-                "OANDA_ENVIRONMENT",
-                str(st.secrets.get("OANDA_ENVIRONMENT", "practice")),
-            )
+        tk = _secret_value(st.secrets, "OANDA_ACCESS_TOKEN")
+        if tk:
+            values.setdefault("OANDA_ACCESS_TOKEN", tk)
+        en = _secret_value(st.secrets, "OANDA_ENVIRONMENT")
+        if en:
+            values.setdefault("OANDA_ENVIRONMENT", en)
     except Exception:
         pass  # no secrets backend (plain local run) - .env / env vars suffice
-    values.setdefault("OANDA_ACCESS_TOKEN", os.environ.get("OANDA_ACCESS_TOKEN", ""))
-    values.setdefault(
-        "OANDA_ENVIRONMENT", os.environ.get("OANDA_ENVIRONMENT", "practice")
-    )
+    values.setdefault("OANDA_ACCESS_TOKEN",
+                      os.environ.get("OANDA_ACCESS_TOKEN", ""))
+    values.setdefault("OANDA_ENVIRONMENT",
+                      os.environ.get("OANDA_ENVIRONMENT", "practice"))
     token = values.get("OANDA_ACCESS_TOKEN", "")
     env = values.get("OANDA_ENVIRONMENT", "practice")
     if not token:
-        st.error("Credentials OANDA manquantes (.env / secrets / variables).")
+        st.error(
+            "Credentials OANDA introuvables.\n\n"
+            "Dans *Manage app -> Settings -> Secrets*, colle exactement\n"
+            "(avec les guillemets) :\n\n"
+            "`OANDA_ACCESS_TOKEN = \"ton-token-65-caracteres\"`\n\n"
+            "`OANDA_ENVIRONMENT = \"practice\"`"
+        )
         st.stop()
+    if len(token) != 65:
+        st.warning(
+            f"Le token OANDA semble anormal ({len(token)} caracteres au lieu"
+            " de 65) - verifiez qu'il est complet et sans espaces."
+        )
     return token, env
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def cached_strength(token: str, env: str) -> dict[str, float]:
     """Currency strength, cached 5 min (token used as cache key is NOT shown)."""
     client = OandaClient(RawTransportFor(token, env))
