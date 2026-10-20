@@ -1,4 +1,16 @@
-streamlit>=1.28.0
-pandas>=2.0.0
-numpy>=1.24.0
-oandapyV20>=0.6.3
+# BLUESTAR SNIPER V18 - production pin (verify-and-reproducible set)
+# Runtime
+streamlit==1.64.0
+pandas==3.0.6
+numpy==2.5.3
+requests==2.33.0
+pytz==2024.1
+# Dev / institutionnal gates (ci/gates.py)
+pytest==9.1.1
+mypy==1.13.0
+types-pytz==2026.5.0.20261006
+ruff==0.16.5
+vulture==2.16
+bandit==1.9.4
+pip-audit==2.10.1
+coverage==7.16.2
