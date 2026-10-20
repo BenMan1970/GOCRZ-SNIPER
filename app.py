@@ -1588,8 +1588,8 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     # ── STYLES ───────────────────────────────────────────────────
     # ── PALETTE DES GRADES ───────────────────────────────────────
     GRADE_STYLE = {
-        "A+": {"color": "#d4c8ff", "line": "#a78bfa", "bg": "rgba(167,139,250,.05)", "label": "A+"},
-        "A":  {"color": "#b0d3ff", "line": "#60a5fa", "bg": "rgba(96,165,250,.035)", "label": "A"},
+        "A+": {"color": "#d4c8ff", "line": "#a78bfa", "bg": "rgba(167,139,250,.11)", "label": "A+"},
+        "A":  {"color": "#b0d3ff", "line": "#60a5fa", "bg": "rgba(96,165,250,.08)", "label": "A"},
         "B+": {"color": "#b8f5ea", "line": "#5eead4", "bg": "transparent",            "label": "B+"},
         "B":  {"color": "#bcc6dc", "line": "#8791ae", "bg": "transparent",            "label": "B"},
         "C":  {"color": "#97a2bf", "line": "#5d6a92", "bg": "transparent",            "label": "C"},
@@ -1597,20 +1597,20 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 
     def fresh_cell(fresh_str: str, is_fresh: bool) -> str:
         txt = fresh_str.replace("⚡", "").replace("⏳", "").strip()
-        col = "#5eead4" if is_fresh else "#8791ae"
+        col = "#5eead4" if is_fresh else "#a8b2cc"
         ico = ICON_BOLT if is_fresh else ICON_CLOCK
         dot = (f'<span class="bs-dot" style="width:4px;height:4px;border-radius:50%;'
                f'background:{col};box-shadow:0 0 3px {col}"></span>' if is_fresh else "")
-        bg  = "rgba(94,234,212,.08)" if is_fresh else "rgba(135,145,174,.1)"
-        bd  = "rgba(94,234,212,.32)" if is_fresh else "rgba(135,145,174,.3)"
+        bg  = "rgba(94,234,212,.16)" if is_fresh else "rgba(135,145,174,.14)"
+        bd  = "rgba(94,234,212,.6)" if is_fresh else "rgba(135,145,174,.4)"
         return (f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
                 f'background:{bg};border:1px solid {bd};padding:4px 10px;border-radius:30px;'
-                f'font-family:\'JetBrains Mono\',monospace;font-size:11.5px;font-weight:500;'
+                f'font-family:\'JetBrains Mono\',monospace;font-size:12.5px;font-weight:600;'
                 f'white-space:nowrap">{dot}<span style="display:inline-flex">{ico}</span>{txt}</span>')
 
     def sig_cell(sig: str, is_bull: bool) -> str:
         expired = "expiré" in sig
-        col     = ("#5eead4" if is_bull else "#f472b6") if not expired else "#8791ae"
+        col     = ("#5eead4" if is_bull else "#f472b6") if not expired else "#a8b2cc"
         word    = "LONG" if is_bull else "SHORT"
         if expired:
             return (f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
@@ -1618,8 +1618,8 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
                     f'<span style="display:inline-flex;opacity:.75">{icon_arrow(is_bull, 10)}</span>'
                     f'{word} · EXPIRÉ</span>')
         return (f'<span style="display:inline-flex;align-items:center;gap:7px;color:{col};'
-                f'background:{col}12;border:1px solid {col}4d;padding:5px 12px 5px 10px;'
-                f'border-radius:9px;font-size:13px;font-weight:700;letter-spacing:.09em">'
+                f'background:{col}26;border:1px solid {col}99;padding:5px 12px 5px 10px;'
+                f'border-radius:9px;font-size:14px;font-weight:700;letter-spacing:.09em">'
                 f'<span style="display:inline-flex">{icon_arrow(is_bull, 12)}</span>{word}</span>')
 
     BIAS_MAP = {
@@ -1631,22 +1631,22 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 
     def bias_cell(b: str) -> str:
         if b not in BIAS_MAP:
-            return ('<span style="color:#8791ae;font-size:13px;letter-spacing:.04em">'
+            return ('<span style="color:#a8b2cc;font-size:14px;letter-spacing:.04em">'
                     '— Neutral</span>')
         label, col, strength, up = BIAS_MAP[b]
         arrows = "".join(f'<span style="display:inline-flex">{icon_arrow(up, 10)}</span>'
                          for _ in range(strength))
-        weight = 700 if strength == 2 else 600
+        weight = 700
         return (f'<span style="display:inline-flex;align-items:center;gap:2px;color:{col};'
-                f'font-size:13.5px;font-weight:{weight};letter-spacing:.01em">'
+                f'font-size:14.5px;font-weight:{weight};letter-spacing:.01em">'
                 f'{arrows}<span style="margin-left:5px">{label}</span></span>')
 
     ZONE_MAP = {
-        "DISCOUNT":  ("#60a5fa", "rgba(96,165,250,.09)",  "rgba(96,165,250,.38)"),
-        "PREMIUM":   ("#f9a8d4", "rgba(249,168,212,.09)", "rgba(249,168,212,.38)"),
-        "EXT HIGH":  ("#f472b6", "rgba(244,114,182,.11)", "rgba(244,114,182,.48)"),
-        "EXT LOW":   ("#5eead4", "rgba(94,234,212,.11)",  "rgba(94,234,212,.48)"),
-        "EQUILIBRE": ("#a8b2cc", "rgba(168,178,204,.09)", "rgba(168,178,204,.3)"),
+        "DISCOUNT":  ("#7db6ff", "rgba(96,165,250,.18)",  "rgba(96,165,250,.7)"),
+        "PREMIUM":   ("#fbc0e0", "rgba(249,168,212,.17)", "rgba(249,168,212,.7)"),
+        "EXT HIGH":  ("#f78ec4", "rgba(244,114,182,.22)", "rgba(244,114,182,.8)"),
+        "EXT LOW":   ("#7ff0dc", "rgba(94,234,212,.2)",  "rgba(94,234,212,.8)"),
+        "EQUILIBRE": ("#d3dbec", "rgba(168,178,204,.16)", "rgba(168,178,204,.55)"),
     }
 
     def zone_cell(z: str, mn_bonus: bool) -> str:
@@ -1655,42 +1655,42 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
                 f'title="Confluence midnight open">{ICON_MOON}</span>' if mn_bonus else "")
         return (f'<span style="display:inline-flex;align-items:center">'
                 f'<span style="color:{col};background:{bg};border:1px solid {bd};'
-                f'padding:4px 10px;border-radius:7px;font-size:10.5px;font-weight:700;'
+                f'padding:5px 11px;border-radius:7px;font-size:11px;font-weight:700;'
                 f'letter-spacing:.11em;white-space:nowrap">{z}</span>{moon}</span>')
 
     def score_bar(score):
         """Score négatif possible (malus ADR/Bias) — affiché tel quel."""
         if score >= 85:
-            grad, col, glow = "linear-gradient(90deg,#60a5fa,#a78bfa 55%,#f472b6)", "#d4c8ff", "0 0 5px -1px rgba(167,139,250,.5)"
+            grad, col, glow = "linear-gradient(90deg,#60a5fa,#a78bfa 55%,#f472b6)", "#ece6ff", "0 0 5px -1px rgba(167,139,250,.5)"
         elif score >= 70:
-            grad, col, glow = "linear-gradient(90deg,#5eead4,#60a5fa)", "#b0d3ff", "0 0 4px -1px rgba(96,165,250,.45)"
+            grad, col, glow = "linear-gradient(90deg,#5eead4,#60a5fa)", "#dcecff", "0 0 4px -1px rgba(96,165,250,.45)"
         elif score >= 55:
-            grad, col, glow = "linear-gradient(90deg,#3f6f8f,#5eead4)", "#b8f5ea", "none"
+            grad, col, glow = "linear-gradient(90deg,#3f6f8f,#5eead4)", "#d9fbf5", "none"
         elif score >= 40:
-            grad, col, glow = "linear-gradient(90deg,#5d6a92,#a8b2cc)", "#bcc6dc", "none"
+            grad, col, glow = "linear-gradient(90deg,#5d6a92,#a8b2cc)", "#e1e7f5", "none"
         else:
-            grad, col, glow = "linear-gradient(90deg,#363f5c,#8791ae)", "#97a2bf", "none"
+            grad, col, glow = "linear-gradient(90deg,#363f5c,#8791ae)", "#c3cce0", "none"
         width = max(3, min(score, 103) / 103 * 100) if score >= 0 else 3
         return (f'<div style="display:flex;align-items:center;gap:11px">'
-                f'<span style="color:{col};font-weight:600;font-size:16px;'
+                f'<span style="color:{col};font-weight:700;font-size:22px;'
                 f'font-family:\'JetBrains Mono\',monospace;font-variant-numeric:tabular-nums;'
-                f'min-width:30px;text-align:right">{score}</span>'
-                f'<div style="width:62px;height:4px;background:rgba(70,84,125,.8);'
+                f'min-width:40px;text-align:right">{score}</span>'
+                f'<div style="width:72px;height:6px;background:rgba(90,104,150,.55);'
                 f'border-radius:3px;overflow:hidden">'
                 f'<div style="width:{width}%;height:100%;background:{grad};'
                 f'border-radius:3px;box-shadow:{glow}"></div></div></div>')
 
     def adr_cell(v, label="ADR", consumed: float | None = None):
         if v is None:
-            return '<span style="color:#7480a0">—</span>'
+            return '<span style="color:#a8b2cc">—</span>'
         formatted = f"{v:.5f}" if v < 1.0 else f"{v:.2f}"
         tag_color = "#60a5fa" if label == "ADR" else "#c4b5fd"
         head = (f'<div style="display:flex;align-items:baseline;gap:7px">'
-                f'<span style="color:{tag_color};font-size:9px;font-weight:700;letter-spacing:.12em;'
+                f'<span style="color:{tag_color};font-size:10px;font-weight:700;letter-spacing:.12em;'
                 f'background:{tag_color}12;border:1px solid {tag_color}40;padding:2px 6px;'
                 f'border-radius:5px">{label}</span>'
-                f'<span style="color:var(--ink-2);font-family:\'JetBrains Mono\',monospace;'
-                f'font-size:13px;font-variant-numeric:tabular-nums">{formatted}</span></div>')
+                f'<span style="color:var(--ink);font-weight:600;font-family:\'JetBrains Mono\',monospace;'
+                f'font-size:15px;font-variant-numeric:tabular-nums">{formatted}</span></div>')
         if consumed is None or (isinstance(consumed, float) and np.isnan(consumed)):
             return head
         consumed = float(consumed)
@@ -1699,63 +1699,65 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         else:               c = "#f472b6"
         fill = int(min(max(consumed, 0), 100))
         gauge = (f'<div style="display:flex;align-items:center;gap:7px;margin-top:6px">'
-                 f'<div style="width:52px;height:3px;background:rgba(70,84,125,.8);'
+                 f'<div style="width:60px;height:4px;background:rgba(90,104,150,.55);'
                  f'border-radius:2px;overflow:hidden">'
                  f'<div style="width:{fill}%;height:100%;background:{c};border-radius:2px">'
                  f'</div></div>'
-                 f'<span style="color:{c};font-size:9.5px;font-family:\'JetBrains Mono\',monospace;'
+                 f'<span style="color:{c};font-size:11px;font-family:\'JetBrains Mono\',monospace;'
                  f'font-weight:700">{consumed:.0f}%</span></div>')
         return f'<div>{head}{gauge}</div>'
 
     def force_cell(momentum_score: int, delta, is_bull: bool) -> str:
         col = "#5eead4" if is_bull else "#f472b6"
         seg = "".join(
-            (f'<div style="width:15px;height:7px;border-radius:2px;background:{col};'
+            (f'<div style="width:16px;height:9px;border-radius:2px;background:{col};'
              f'box-shadow:0 0 4px -1px {col}"></div>') if i < momentum_score else
-            '<div style="width:15px;height:7px;border-radius:2px;background:rgba(70,84,125,.85)"></div>'
+            '<div style="width:16px;height:9px;border-radius:2px;background:rgba(90,104,150,.55)"></div>'
             for i in range(3)
         )
         bars = f'<div style="display:flex;gap:4px;align-items:center">{seg}</div>'
         if delta is not None:
             dc = ("#5eead4" if delta >= 1.5 else "#f472b6" if delta <= -1.5 else "#a8b2cc")
             sign = "+" if delta > 0 else ""
-            dh = (f'<span style="color:{dc};background:{dc}10;border:1px solid {dc}38;'
-                  f'padding:2px 7px;border-radius:6px;font-weight:700;font-size:11px;'
+            dh = (f'<span style="color:{dc};background:{dc}22;border:1px solid {dc}77;'
+                  f'padding:2px 7px;border-radius:6px;font-weight:700;font-size:13px;'
                   f'font-family:\'JetBrains Mono\',monospace;margin-left:10px;'
                   f'font-variant-numeric:tabular-nums">{sign}{delta:.1f}</span>')
         else:
-            dh = ('<span style="color:#7480a0;margin-left:10px;font-size:10.5px;'
+            dh = ('<span style="color:#a8b2cc;margin-left:10px;font-size:11.5px;'
                   'font-family:\'JetBrains Mono\',monospace">n/a</span>')
         return f'<div style="display:flex;align-items:center">{bars}{dh}</div>'
 
     # ── TABLEAU ──────────────────────────────────────────────────
     html = """
 <style>
-.sc-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:17px;
-  background:linear-gradient(180deg,rgba(15,19,32,.95),rgba(10,13,23,.95));
-  box-shadow:0 20px 44px -30px rgba(0,0,0,.9)}
+.sc-wrap{overflow-x:auto;border:1px solid #3d4a70;border-radius:17px;
+  background:linear-gradient(180deg,#131a2f,#0d1325);
+  box-shadow:0 20px 44px -30px rgba(0,0,0,.9),0 0 0 1px rgba(255,255,255,.03)}
 .sc-tbl{width:100%;border-collapse:separate;border-spacing:0;
-  font-family:'Inter Tight',sans-serif;font-size:14px}
+  font-family:'Inter Tight',sans-serif;font-size:14.5px;font-weight:500;color:var(--ink)}
 .sc-tbl thead th{
   padding:14px 18px;text-align:left;white-space:nowrap;
-  color:var(--muted);font-size:9.5px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;
-  background:rgba(19,24,38,.96);border-bottom:1px solid var(--line-2);
+  color:var(--ink-2);font-size:10.5px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;
+  background:#19223b;border-bottom:1px solid #4a5985;
   position:sticky;top:0;backdrop-filter:blur(3px);z-index:2}
-.sc-tbl td{padding:15px 18px;border-bottom:1px solid rgba(50,61,92,.8);vertical-align:middle}
+.sc-tbl td{padding:15px 18px;border-bottom:1px solid rgba(90,104,150,.45);vertical-align:middle}
+.sc-tbl tbody tr:nth-child(even) td{background:rgba(255,255,255,.028)}
 .sc-tbl tbody tr{transition:background .14s ease}
-.sc-tbl tbody tr:hover td{background:rgba(27,35,53,.6)}
+.sc-tbl tbody tr:hover td{background:rgba(70,90,150,.28)}
 .sc-tbl tbody tr:last-child td{border-bottom:none}
 .sc-tbl td:first-child{position:relative;padding-left:20px}
-.sc-tbl td:first-child::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;
+.sc-tbl td:first-child::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;
   border-radius:0 3px 3px 0}
 .rail-bull td:first-child::before{background:linear-gradient(180deg,#5eead4,rgba(94,234,212,.2))}
 .rail-bear td:first-child::before{background:linear-gradient(180deg,#f472b6,rgba(244,114,182,.2))}
-.ticker{font-size:17.5px;font-weight:600;color:var(--ink);white-space:nowrap;letter-spacing:-.01em;
+.ticker{font-size:19px;font-weight:700;color:var(--ink);white-space:nowrap;letter-spacing:-.01em;
   font-variant-numeric:tabular-nums}
-.grade-pill{display:inline-block;padding:3px 9px;border-radius:7px;font-size:10.5px;font-weight:700;
+.stale .ticker{color:var(--ink-2)}
+.grade-pill{display:inline-block;padding:3px 10px;border-radius:7px;font-size:11.5px;font-weight:700;
   letter-spacing:.06em;margin-left:11px;vertical-align:middle;font-family:'JetBrains Mono',monospace}
 .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:30px;
-  font-size:9.5px;font-weight:700;letter-spacing:.12em;margin-left:9px;vertical-align:middle}
+  font-size:10.5px;font-weight:700;letter-spacing:.12em;margin-left:9px;vertical-align:middle}
 </style>
 <div class="sc-wrap"><table class="sc-tbl">
 <thead><tr>
@@ -1790,29 +1792,29 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         is_bull   = bool(row.get("signal_is_bull", True))
         mn_bonus  = bool(row.get("Midnight Bonus", False))
 
-        align_tag = (f'<span class="chip" style="background:rgba(244,114,182,.09);'
-                     f'border:1px solid rgba(244,114,182,.38);color:#f472b6">'
+        align_tag = (f'<span class="chip" style="background:rgba(244,114,182,.18);'
+                     f'border:1px solid rgba(244,114,182,.7);color:#f78ec4">'
                      f'{ICON_ALERT}COUNTER</span>') if alignment == "COUNTER" else ""
 
         if kz_now and fresh:
             _kc = killzone_color(kz_now)
-            kz_tag = (f'<span class="chip" style="background:{_kc}10;border:1px solid {_kc}40;'
+            kz_tag = (f'<span class="chip" style="background:{_kc}22;border:1px solid {_kc}80;'
                       f'color:{_kc}">{killzone_badge(kz_now)}</span>')
         else:
             kz_tag = ""
 
         row_bg = gs["bg"] if fresh and grade in ("A+", "A") else "transparent"
-        rail   = "rail-bull" if is_bull else "rail-bear"
+        rail   = ("rail-bull" if is_bull else "rail-bear") + ("" if fresh else " stale")
         row_style = f'background:{row_bg}'
         if fresh and grade == "A+":
-            row_style += ';box-shadow:inset 0 0 36px -16px rgba(167,139,250,.12)'
+            row_style += ';box-shadow:inset 0 0 36px -16px rgba(167,139,250,.22)'
 
         html += f"""<tr class="{rail}" style="{row_style}">
   <td>{fresh_cell(fresh_str, fresh)}</td>
   <td style="white-space:nowrap">
     <span class="ticker">{ticker}</span>
-    <span class="grade-pill" style="color:{gs['color']};background:{gs['line']}18;
-          border:1px solid {gs['line']}66">{gs['label']}</span>
+    <span class="grade-pill" style="color:{gs['color']};background:{gs['line']}30;
+          border:1px solid {gs['line']}aa">{gs['label']}</span>
     {align_tag}
   </td>
   <td style="white-space:nowrap">{sig_cell(sig, is_bull)}{kz_tag}</td>
