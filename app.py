@@ -1317,7 +1317,7 @@ def main():
     .kpi::before{content:"";position:absolute;top:0;left:16px;right:16px;height:1.5px;
                  background:var(--acc);border-radius:2px;opacity:.85}
     .kpi::after{content:"";position:absolute;top:-42px;right:-42px;width:104px;height:104px;
-                border-radius:50%;background:var(--acc);opacity:.045;filter:blur(14px)}
+                border-radius:50%;background:var(--acc);opacity:.045;filter:blur(6px)}
     .kpi-l{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px;
            font-weight:600;letter-spacing:.14em;text-transform:uppercase}
     .kpi-v{font-family:'JetBrains Mono',monospace;font-size:29px;font-weight:500;
@@ -1740,7 +1740,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
   padding:14px 18px;text-align:left;white-space:nowrap;
   color:var(--muted);font-size:9.5px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;
   background:rgba(19,24,38,.96);border-bottom:1px solid var(--line-2);
-  position:sticky;top:0;backdrop-filter:blur(9px);z-index:2}
+  position:sticky;top:0;backdrop-filter:blur(3px);z-index:2}
 .sc-tbl td{padding:15px 18px;border-bottom:1px solid rgba(50,61,92,.8);vertical-align:middle}
 .sc-tbl tbody tr{transition:background .14s ease}
 .sc-tbl tbody tr:hover td{background:rgba(27,35,53,.6)}
