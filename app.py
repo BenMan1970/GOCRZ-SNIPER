@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import oandapyV20
 import oandapyV20.endpoints.instruments as instruments
-import oandapyV20.endpoints.accounts as accounts
 from datetime import datetime
 import pytz
 import time
@@ -19,7 +18,7 @@ import logging
 #  Trend filter   : MTF Institutionnel (M/W/D/4H/1H/15m)
 #  Zone ICT       : Midnight Open · Premium / Discount · PDH/PDL
 #  Momentum       : ADX Wilder · RSI · MACD · ZLEMA
-#  Volatilité     : ADR (forex/métaux) · ATR (indices)
+#  Volatilité     : ADR (forex/métaux/crypto) · ATR (indices)
 #  FVG            : LuxAlgo M15 — détection + mitigation auto
 #  Strength       : Currency Strength delta base/quote
 #  Scoring        : /100 — grades A+/A/B+/B/C
@@ -69,6 +68,30 @@ KILLZONES_UTC_FIXED = {
 
 INDICES = {"US30_USD", "NAS100_USD", "DE30_EUR"}
 
+# ----------------------------------------------------------------
+#  UNIVERS SCANNÉ
+# ----------------------------------------------------------------
+# Le DAX (40 valeurs) est coté chez OANDA sous le symbole API historique "DE30_EUR"
+# (le broker n'a pas renommé l'instrument). On garde ce symbole pour les requêtes et on
+# affiche "DE40" dans l'interface via DISPLAY_NAMES.
+# Crypto : OANDA expose BTC_USD et ETH_USD (Solana n'est pas listé chez OANDA).
+ASSETS = [
+    "EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF",
+    "AUD_USD", "USD_CAD", "NZD_USD",
+    "EUR_GBP", "EUR_JPY", "EUR_CHF",
+    "EUR_AUD", "EUR_CAD", "EUR_NZD",
+    "GBP_JPY", "GBP_CHF", "GBP_AUD",
+    "GBP_CAD", "GBP_NZD",
+    "AUD_JPY", "CAD_JPY", "CHF_JPY", "NZD_JPY",
+    "AUD_CAD", "AUD_CHF", "AUD_NZD",
+    "CAD_CHF", "NZD_CAD", "NZD_CHF",
+    "XAU_USD",
+    "US30_USD", "NAS100_USD", "DE30_EUR",
+    "BTC_USD", "ETH_USD",
+]
+
+DISPLAY_NAMES = {"DE30_EUR": "DE40"}
+
 def get_current_killzone() -> str:
     ny_tz  = pytz.timezone("America/New_York")
     now_ny = datetime.now(ny_tz)
@@ -97,7 +120,7 @@ def killzone_badge(kz: str) -> str:
     return KZ_STYLE.get(kz, ("", ""))[0]
 
 def killzone_color(kz: str) -> str:
-    return KZ_STYLE.get(kz, ("", "#7a84a0"))[1]
+    return KZ_STYLE.get(kz, ("", "#8f99b5"))[1]
 
 
 # ----------------------------------------------------------------
@@ -222,7 +245,7 @@ class QuantEngine:
 
 
 # ----------------------------------------------------------------
-#  ADR — Average Daily Range (forex/metals uniquement)
+#  ADR — Average Daily Range (forex/metals/crypto)
 # ----------------------------------------------------------------
 def compute_adr(df_d: pd.DataFrame, period: int = 14) -> float:
     if not is_valid_df(df_d, 2):
@@ -432,17 +455,19 @@ def get_daily_bias_v2(df_d: pd.DataFrame, current_price: float = None):
         df_copy = df_d.copy()
         if df_copy.index.tz is None:
             df_copy.index = df_copy.index.tz_localize("UTC")
-        # Lundi = lundi en heure NY, pas en UTC brut : la semaine de trading forex est
-        # définie en heure NY (ouverture dimanche 17h NY). Un dayofweek calculé sur un
-        # index UTC non converti peut capturer la bougie de la mauvaise session selon
-        # l'alignement de compte OANDA (dailyAlignment).
+        # Les bougies D OANDA s'alignent à 17:00 NY : la session du lundi démarre donc le
+        # DIMANCHE 17:00 NY. On décale l'heure NY (heure murale) de +7h pour que cette
+        # bougie tombe sur lundi 00:00 → "lundi" = première session de la semaine.
+        # On ne retient que la bougie de lundi de la semaine COURANTE : avant la clôture
+        # de cette bougie (lundi 17:00 NY) elle est absente (bougies incomplètes filtrées)
+        # et le vote Weekly Open est alors omis, plutôt que de lire la semaine précédente.
         ny_tz_wo    = pytz.timezone("America/New_York")
-        idx_ny_wo   = df_copy.index.tz_convert(ny_tz_wo)
-        monday_rows = df_copy[idx_ny_wo.dayofweek == 0]
-        current_week_mondays = monday_rows[
-            monday_rows.index > (datetime.now(pytz.UTC) - pd.Timedelta(days=7))
-            # > strict (au lieu de >=) pour exclure le lundi J-7
-            # qui correspond à la semaine PRÉCÉDENTE quand lancé un lundi
+        shifted_idx = (df_copy.index.tz_convert(ny_tz_wo).tz_localize(None)
+                       + pd.Timedelta(hours=7))
+        now_shifted = datetime.now(ny_tz_wo).replace(tzinfo=None) + pd.Timedelta(hours=7)
+        monday_date = (now_shifted - pd.Timedelta(days=now_shifted.weekday())).date()
+        current_week_mondays = df_copy[
+            np.array([t.date() for t in shifted_idx]) == monday_date
         ]
         if not current_week_mondays.empty:
             weekly_open = float(current_week_mondays['open'].iloc[0])
@@ -823,6 +848,10 @@ def fetch_oanda_data(access_token: str, environment: str,
             err_str = str(e)
             if "401" in err_str or "Unauthorized" in err_str:
                 return pd.DataFrame(), "TOKEN_INVALID"
+            # Instrument inconnu / indisponible sur ce compte : inutile de retenter
+            # 3 fois avec backoff, on abandonne tout de suite.
+            elif getattr(e, "code", None) == 400 or ("nstrument" in err_str and "nvalid" in err_str):
+                return pd.DataFrame(), f"INSTRUMENT_UNAVAILABLE: {err_str[:80]}"
             elif "429" in err_str:
                 time.sleep(RETRY_DELAY * attempt * 3)
                 continue
@@ -833,30 +862,6 @@ def fetch_oanda_data(access_token: str, environment: str,
             if attempt == MAX_RETRIES:
                 return pd.DataFrame(), str(e)
     return pd.DataFrame(), "MAX_RETRIES"
-
-
-def test_oanda_connection(access_token: str, environment: str, account_id: str = None):
-    client = oandapyV20.API(access_token=access_token, environment=environment)
-    try:
-        if account_id:
-            r = accounts.AccountDetails(account_id)
-        else:
-            r = accounts.AccountList()
-        client.request(r)
-        if account_id:
-            acc      = r.response.get("account", {})
-            currency = acc.get("currency", "?")
-            balance  = acc.get("balance",  "?")
-            return True, f"✅ Connecté — compte `{account_id}` · {currency} {balance}"
-        else:
-            accs = r.response.get("accounts", [])
-            ids  = [a.get("id", "?") for a in accs]
-            return True, f"✅ Connecté — {len(ids)} compte(s)"
-    except Exception as e:
-        err = str(e)
-        if "401" in err or "Unauthorized" in err:
-            return False, "❌ Token invalide ou expiré"
-        return False, f"❌ Erreur : {err}"
 
 
 # ----------------------------------------------------------------
@@ -942,7 +947,7 @@ def analyze_asset(access_token: str, environment: str,
 
         price = float(df_m15['close'].iloc[-1])
 
-        bias, bias_detail = get_daily_bias_v2(df_d, current_price=price)
+        bias, _ = get_daily_bias_v2(df_d, current_price=price)
         bias_bull = bias in ("BULLISH", "STRONG BULLISH")
         bias_bear = bias in ("BEARISH", "STRONG BEARISH")
 
@@ -954,7 +959,7 @@ def analyze_asset(access_token: str, environment: str,
             "1H":  df_h1  if is_valid_df(df_h1)  else None,
             "15m": df_m15 if is_valid_df(df_m15) else None,
         }
-        mtf_pct, mtf_dominant, mtf_details = compute_mtf_analysis(dfs_mtf)
+        mtf_pct, mtf_dominant, _ = compute_mtf_analysis(dfs_mtf)
 
         hma = QuantEngine.hma(df_m15['close'], 20)
         if hma.isna().iloc[-5:].any():
@@ -1039,7 +1044,6 @@ def analyze_asset(access_token: str, environment: str,
             logger.warning("[%s] midnight_open error: %s", ticker, _e)
 
 
-        # Un assert est désactivé par Python -O (Streamlit Cloud optimisé) → fausse sécurité
         pdh = float(df_d["high"].iloc[-1])
         pdl = float(df_d["low"].iloc[-1])
 
@@ -1103,7 +1107,7 @@ def analyze_asset(access_token: str, environment: str,
             logger.warning("[%s] ADX score computation failed: %s", ticker, _e)
             adx_val_score, pdi_val, mdi_val = 0.0, 0.0, 0.0
 
-        # ADR (forex/metals) ou ATR (indices)
+        # ADR (forex/metals/crypto) ou ATR (indices)
         if ticker in INDICES:
             _atr_d_raw   = QuantEngine.atr(df_d, 14).iloc[-1]
             adr_display  = round(float(_atr_d_raw), 2) if not pd.isna(_atr_d_raw) else None
@@ -1152,13 +1156,10 @@ def analyze_asset(access_token: str, environment: str,
             "Zone":           zone_label,
             "Score /100":     score,
             "Grade":          grade,
-            "ADX H1":         adx_val_score,
             "ADR":            adr_display,
             "ADR Label":      adr_label,
             "ADR Consumed":   adr_consumed,
             "MTF Pct":        mtf_pct,
-            "MTF Dom":        mtf_dominant,
-            "MTF Details":    mtf_details,
             "Strength Δ":     strength_delta,
             "Momentum":       momentum,
             "signal_is_bull": signal_is_bull,
@@ -1203,21 +1204,19 @@ def main():
         initial_sidebar_state="collapsed"
     )
 
+    # Thème : contraste légèrement relevé (fond plus profond, texte/bordures plus
+    # lisibles) et effet néon atténué (halos, glows et dégradés d'ambiance réduits).
     st.markdown(_html("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
     :root{
-      --bg:#070910;
-      --surface:#0e1220;   --surface-2:#141926;  --surface-3:#1a2132;
-      --line:#1c2233;      --line-2:#283049;
-      --ink:#edf0f7;       --ink-2:#b6bfd4;
-      --muted:#7a84a0;     --muted-2:#49516a;
-      --mint:#5eead4;      --mint-2:#a9f3e6;
-      --fuchsia:#f472b6;   --fuchsia-2:#f9a8d4;
-      --azure:#60a5fa;     --azure-2:#9cc7fd;
-      --iris:#a78bfa;      --amber:#fbbf24;
-      --bull:#5eead4;      --bear:#f472b6;
+      --bg:#05070d;
+      --surface:#0d111d;   --surface-3:#1b2335;
+      --line:#262f47;      --line-2:#364264;
+      --ink:#f4f6fb;       --ink-2:#cbd3e6;
+      --muted:#8f99b5;     --muted-2:#6b7491;
+      --azure-2:#9cc7fd;   --iris:#a78bfa;
     }
 
     html, body, [class*="css"]{
@@ -1226,9 +1225,9 @@ def main():
     }
     .stApp{
       background:
-        radial-gradient(1150px 540px at 6% -14%,  rgba(96,165,250,.11), transparent 62%),
-        radial-gradient(920px  480px at 94% -8%,  rgba(244,114,182,.085), transparent 62%),
-        radial-gradient(760px  440px at 48% 112%, rgba(94,234,212,.055), transparent 62%),
+        radial-gradient(1150px 540px at 6% -14%,  rgba(96,165,250,.075), transparent 62%),
+        radial-gradient(920px  480px at 94% -8%,  rgba(244,114,182,.055), transparent 62%),
+        radial-gradient(760px  440px at 48% 112%, rgba(94,234,212,.035), transparent 62%),
         var(--bg);
     }
     .block-container{padding-top:2.1rem;padding-bottom:4rem;max-width:1520px}
@@ -1239,18 +1238,18 @@ def main():
     /* ── CTA : dégradé menthe → azur → fuchsia ─────────────────── */
     .stButton>button{
       background:linear-gradient(94deg,#5eead4 0%,#60a5fa 46%,#f472b6 100%)!important;
-      color:#07111c!important;border:none!important;
-      font-family:'Inter Tight',sans-serif!important;font-weight:600!important;
+      color:#050a14!important;border:none!important;
+      font-family:'Inter Tight',sans-serif!important;font-weight:700!important;
       font-size:13px!important;letter-spacing:.16em!important;text-transform:uppercase!important;
       border-radius:12px!important;padding:14px 0!important;
-      box-shadow:inset 0 1px 0 rgba(255,255,255,.22),
-                 0 10px 30px -14px rgba(96,165,250,.85)!important;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.18),
+                 0 8px 22px -14px rgba(96,165,250,.5)!important;
       transition:transform .16s cubic-bezier(.2,.8,.2,1),box-shadow .18s ease,filter .18s ease!important;
     }
     .stButton>button:hover{
-      transform:translateY(-1.5px)!important;filter:saturate(1.1) brightness(1.04)!important;
-      box-shadow:0 16px 38px -14px rgba(244,114,182,.6),
-                 inset 0 1px 0 rgba(255,255,255,.28)!important;
+      transform:translateY(-1.5px)!important;filter:saturate(1.03) brightness(1.03)!important;
+      box-shadow:0 12px 26px -14px rgba(244,114,182,.4),
+                 inset 0 1px 0 rgba(255,255,255,.22)!important;
     }
     .stButton>button:active{transform:translateY(0)!important}
 
@@ -1260,14 +1259,14 @@ def main():
       letter-spacing:.13em!important;text-transform:uppercase!important;
     }
     .stSelectbox div[data-baseweb="select"]>div{
-      background:rgba(20,25,38,.72)!important;border:1px solid var(--line)!important;
+      background:rgba(19,24,38,.85)!important;border:1px solid var(--line)!important;
       border-radius:11px!important;min-height:44px!important;
       transition:border-color .16s ease, box-shadow .16s ease!important;
     }
     .stSelectbox div[data-baseweb="select"]>div:hover{border-color:var(--line-2)!important}
     .stSelectbox div[data-baseweb="select"]>div:focus-within{
-      border-color:rgba(96,165,250,.65)!important;
-      box-shadow:0 0 0 3px rgba(96,165,250,.12)!important;
+      border-color:rgba(96,165,250,.7)!important;
+      box-shadow:0 0 0 2px rgba(96,165,250,.1)!important;
     }
     .stSelectbox div[data-baseweb="select"] *{color:var(--ink)!important;font-size:14px!important}
     div[data-baseweb="popover"] ul{background:var(--surface)!important;
@@ -1276,7 +1275,7 @@ def main():
 
     /* ── Expander / légende ────────────────────────────────────── */
     [data-testid="stExpander"]{
-      background:linear-gradient(180deg,rgba(20,25,38,.7),rgba(14,18,32,.7))!important;
+      background:linear-gradient(180deg,rgba(19,24,38,.8),rgba(13,17,29,.8))!important;
       border:1px solid var(--line)!important;border-radius:14px!important;overflow:hidden!important;
     }
     [data-testid="stExpander"] summary{
@@ -1290,7 +1289,7 @@ def main():
       background:transparent!important;padding:9px 12px!important;text-align:left!important;
     }
     [data-testid="stExpander"] td{
-      color:var(--ink-2)!important;border-bottom:1px solid rgba(28,34,51,.6)!important;
+      color:var(--ink-2)!important;border-bottom:1px solid rgba(38,47,71,.7)!important;
       padding:9px 12px!important;
     }
     [data-testid="stExpander"] code{
@@ -1311,22 +1310,22 @@ def main():
     /* ── Grille KPI ────────────────────────────────────────────── */
     .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
               gap:12px;margin:6px 0 26px}
-    .kpi{position:relative;background:linear-gradient(168deg,rgba(20,25,38,.85),rgba(13,17,30,.85));
+    .kpi{position:relative;background:linear-gradient(168deg,rgba(19,24,38,.92),rgba(12,16,28,.92));
          border:1px solid var(--line);border-radius:15px;padding:15px 16px 14px;overflow:hidden;
          transition:border-color .18s ease,transform .18s cubic-bezier(.2,.8,.2,1)}
     .kpi:hover{transform:translateY(-2px);border-color:var(--line-2)}
     .kpi::before{content:"";position:absolute;top:0;left:16px;right:16px;height:1.5px;
-                 background:var(--acc);border-radius:2px;opacity:.9}
+                 background:var(--acc);border-radius:2px;opacity:.85}
     .kpi::after{content:"";position:absolute;top:-42px;right:-42px;width:104px;height:104px;
-                border-radius:50%;background:var(--acc);opacity:.085;filter:blur(14px)}
+                border-radius:50%;background:var(--acc);opacity:.045;filter:blur(14px)}
     .kpi-l{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px;
            font-weight:600;letter-spacing:.14em;text-transform:uppercase}
     .kpi-v{font-family:'JetBrains Mono',monospace;font-size:29px;font-weight:500;
            color:var(--ink);line-height:1.15;margin-top:9px;font-variant-numeric:tabular-nums}
     .kpi-dim .kpi-v{color:var(--muted-2)}
 
-    @keyframes bs-breathe{0%,100%{transform:scale(1);opacity:.4}50%{transform:scale(1.55);opacity:0}}
-    @keyframes bs-ping{0%,100%{opacity:1}50%{opacity:.35}}
+    @keyframes bs-breathe{0%,100%{transform:scale(1);opacity:.3}50%{transform:scale(1.45);opacity:0}}
+    @keyframes bs-ping{0%,100%{opacity:1}50%{opacity:.45}}
     .bs-pulse{animation:bs-breathe 2.4s cubic-bezier(.2,.6,.3,1) infinite}
     .bs-dot{animation:bs-ping 1.9s ease-in-out infinite}
     </style>
@@ -1339,10 +1338,10 @@ def main():
         kz_html = (
             f'<span style="display:inline-flex;align-items:center;gap:7px;margin-left:14px;'
             f'padding:5px 11px 5px 9px;border-radius:30px;vertical-align:middle;'
-            f'background:linear-gradient(90deg,{_kc}1f,{_kc}0a);'
-            f'border:1px solid {_kc}3d">'
+            f'background:linear-gradient(90deg,{_kc}1a,{_kc}08);'
+            f'border:1px solid {_kc}4d">'
             f'<span class="bs-dot" style="width:5px;height:5px;border-radius:50%;'
-            f'background:{_kc};box-shadow:0 0 8px {_kc}"></span>'
+            f'background:{_kc};box-shadow:0 0 3px {_kc}"></span>'
             f'<span style="font-size:10px;font-weight:600;letter-spacing:.15em;'
             f'color:{_kc}">{killzone_badge(kz_now)}</span></span>'
         )
@@ -1360,10 +1359,10 @@ def main():
               <stop offset="100%" stop-color="#f472b6"/>
             </linearGradient>
           </defs>
-          <circle cx="24" cy="24" r="21" stroke="url(#bsg)" stroke-width="1.3" opacity=".38"/>
-          <circle cx="24" cy="24" r="13.5" stroke="url(#bsg)" stroke-width="1.3" opacity=".8"/>
+          <circle cx="24" cy="24" r="21" stroke="url(#bsg)" stroke-width="1.3" opacity=".42"/>
+          <circle cx="24" cy="24" r="13.5" stroke="url(#bsg)" stroke-width="1.3" opacity=".85"/>
           <path d="M24 1.5v9M24 37.5v9M1.5 24h9M37.5 24h9"
-                stroke="url(#bsg)" stroke-width="1.3" stroke-linecap="round" opacity=".6"/>
+                stroke="url(#bsg)" stroke-width="1.3" stroke-linecap="round" opacity=".65"/>
           <circle cx="24" cy="24" r="3.6" fill="url(#bsg)"/>
         </svg>
         <div class="bs-pulse" style="position:absolute;inset:6px;border-radius:50%;
@@ -1373,18 +1372,18 @@ def main():
         <h1 style="margin:0;font-size:27px;color:var(--ink);font-weight:600;letter-spacing:-.02em">
           Bluestar <span style="font-weight:400;color:var(--ink-2)">Sniper</span>
           <span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;
-                color:var(--iris);background:rgba(167,139,250,.1);border:1px solid rgba(167,139,250,.22);
+                color:var(--iris);background:rgba(167,139,250,.1);border:1px solid rgba(167,139,250,.3);
                 padding:3px 8px;border-radius:7px;margin-left:9px;vertical-align:middle">V16</span>
           {kz_html}
         </h1>
         <p style="margin:6px 0 0;display:flex;flex-wrap:wrap;align-items:center;gap:6px;
                   color:var(--muted);font-size:12px;letter-spacing:.05em">
           <span>HMA 20 · M15</span>
-          <span style="color:var(--muted-2);opacity:.6">/</span>
+          <span style="color:var(--muted-2);opacity:.7">/</span>
           <span>Multi-timeframe</span>
-          <span style="color:var(--muted-2);opacity:.6">/</span>
+          <span style="color:var(--muted-2);opacity:.7">/</span>
           <span>Zones ICT</span>
-          <span style="color:var(--muted-2);opacity:.6">/</span>
+          <span style="color:var(--muted-2);opacity:.7">/</span>
           <span>FVG &amp; Currency Strength</span>
         </p>
       </div>
@@ -1392,13 +1391,12 @@ def main():
     <hr>
     """), unsafe_allow_html=True)
 
-    missing = [k for k in ("OANDA_ACCESS_TOKEN", "OANDA_ACCOUNT_ID") if k not in st.secrets]
-    if missing:
-        st.error(f"🔑 **Secret(s) manquant(s) :** `{'`, `'.join(missing)}`")
+    # Seul le token est utilisé (les endpoints candles n'ont pas besoin de l'account id).
+    if "OANDA_ACCESS_TOKEN" not in st.secrets:
+        st.error("🔑 **Secret manquant :** `OANDA_ACCESS_TOKEN`")
         st.stop()
 
     ACCESS_TOKEN = st.secrets["OANDA_ACCESS_TOKEN"]
-    ACCOUNT_ID   = st.secrets["OANDA_ACCOUNT_ID"]
 
     # environnement configurable via secrets
     env = st.secrets.get("OANDA_ENVIRONMENT", "practice")
@@ -1427,7 +1425,7 @@ def main():
 | **FVG M15** | 15 pts | Variante LuxAlgo (mitigation + seuil auto) |
 | **ADX momentum** | 10 pts | ADX>25+DI ok = 10 · ADX>20+DI ok = 6 |
 | **ATR actif** | 5 pts | ≥ moyenne = 5 · ≥ 50% = 3 |
-| **ADR Malus** | -5 pts | Range journalier > 70% consommé depuis minuit NY (forex/métaux uniquement — non applicable aux indices, notés en ATR) |
+| **ADR Malus** | -5 pts | Range journalier > 70% consommé depuis minuit NY (forex/métaux/crypto — non applicable aux indices, notés en ATR) |
 | **Bias Malus** | -20 pts | Signal contraire (⚠ COUNTER) au biais journalier 5 facteurs |
 
 Score max réel = **103** (échelle affichée « /103 », pas /100), plage possible [−25 ; 103].
@@ -1436,13 +1434,13 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 |---|---|
 | **Zone** | DISCOUNT = prix sous MO (00h00 NY) · PREMIUM = prix dessus · EXT HIGH/LOW = hors PDH/PDL |
 | **ADR / ATR** | Valeur + jauge de consommation du range (🟢 <40% · 🟡 40–70% · 🔴 >70%) |
-| **Force** | ■■■ = ADX H4·H1·M15 ≥ 25 alignés · chiffre = Strength Δ base/quote |
+| **Force** | ■■■ = ADX H4·H1·M15 ≥ 25 alignés · chiffre = Strength Δ base/quote (n/a pour indices, métaux et crypto) |
         """)
 
     run = st.button("🚀  LANCER LE SCANNER", use_container_width=True)
 
     if not run:
-        st.markdown(_html("""
+        st.markdown(_html(f"""
         <div style="text-align:center;padding:86px 0 74px">
           <div style="position:relative;width:72px;height:72px;margin:0 auto 26px">
             <div class="bs-pulse" style="position:absolute;inset:0;border-radius:50%;
@@ -1451,36 +1449,22 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
               <defs><linearGradient id="bse" x1="8" y1="8" x2="64" y2="64">
                 <stop offset="0%" stop-color="#5eead4"/><stop offset="50%" stop-color="#60a5fa"/>
                 <stop offset="100%" stop-color="#f472b6"/></linearGradient></defs>
-              <circle cx="36" cy="36" r="30" stroke="url(#bse)" stroke-width="1.1" opacity=".3"/>
-              <circle cx="36" cy="36" r="18" stroke="url(#bse)" stroke-width="1.1" opacity=".6"/>
+              <circle cx="36" cy="36" r="30" stroke="url(#bse)" stroke-width="1.1" opacity=".35"/>
+              <circle cx="36" cy="36" r="18" stroke="url(#bse)" stroke-width="1.1" opacity=".65"/>
               <path d="M36 2v12M36 58v12M2 36h12M58 36h12" stroke="url(#bse)"
-                    stroke-width="1.1" stroke-linecap="round" opacity=".5"/>
+                    stroke-width="1.1" stroke-linecap="round" opacity=".55"/>
               <circle cx="36" cy="36" r="4.5" fill="url(#bse)"/>
             </svg>
           </div>
           <div style="font-size:15px;color:var(--ink-2);font-weight:500">
             Scanner en veille
           </div>
-          <div style="font-size:12.5px;color:var(--muted-2);margin-top:7px;letter-spacing:.04em">
-            33 instruments · 6 timeframes · lance l'analyse pour révéler les setups actifs
+          <div style="font-size:12.5px;color:var(--muted);margin-top:7px;letter-spacing:.04em">
+            {len(ASSETS)} instruments · 6 timeframes · lance l'analyse pour révéler les setups actifs
           </div>
         </div>
         """), unsafe_allow_html=True)
         return
-
-    assets = [
-        "EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF",
-        "AUD_USD", "USD_CAD", "NZD_USD",
-        "EUR_GBP", "EUR_JPY", "EUR_CHF",
-        "EUR_AUD", "EUR_CAD", "EUR_NZD",
-        "GBP_JPY", "GBP_CHF", "GBP_AUD",
-        "GBP_CAD", "GBP_NZD",
-        "AUD_JPY", "CAD_JPY", "CHF_JPY", "NZD_JPY",
-        "AUD_CAD", "AUD_CHF", "AUD_NZD",
-        "CAD_CHF", "NZD_CAD", "NZD_CHF",
-        "XAU_USD", "XAG_USD",
-        "US30_USD", "NAS100_USD", "DE30_EUR",
-    ]
 
     results   = []
     debug_log = []
@@ -1508,7 +1492,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
                     ACCESS_TOKEN, env, ticker,
                     freshness, strength_scores, debug_log, _lock
                 ): ticker
-                for ticker in assets
+                for ticker in ASSETS
             }
             for fut in as_completed(future_map):
                 ticker = future_map[fut]
@@ -1520,8 +1504,8 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
                 except Exception as _e:
                     logger.error("Outer future %s: %s", ticker, _e)
                 completed_count += 1
-                progress.progress(completed_count / len(assets))
-                status.caption(f"⏳ {ticker}… ({completed_count}/{len(assets)})")
+                progress.progress(completed_count / len(ASSETS))
+                status.caption(f"⏳ {DISPLAY_NAMES.get(ticker, ticker)}… ({completed_count}/{len(ASSETS)})")
 
     elapsed = round(time.time() - t_start, 1)
     status.empty()
@@ -1534,8 +1518,8 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
                 with cols_d[0]:
                     cats = Counter()
                     for _, reason in debug_log:
-                        cat = reason.split("_")[0] if "_" in reason else reason[:20]
-                        cats[cat] += 1
+                        # catégorie = texte avant ":" (ex. FETCH_M15, NO_HMA_FLIP, EXCEPTION)
+                        cats[reason.split(":")[0].strip()] += 1
                     st.markdown("**Raisons agrégées**")
                     for cat, n in cats.most_common():
                         st.markdown(f"- `{cat}` → **{n}**")
@@ -1549,7 +1533,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         return
 
     # Recalculé après la fin du scan (corrigé V16.1) — la valeur capturée avant le scan
-    # (l.1183, purement décorative pour l'en-tête pré-scan) pouvait dater de 30-60s et
+    # (purement décorative pour l'en-tête pré-scan) pouvait dater de 30-60s et
     # être utilisée telle quelle pour le badge de chaque ligne et le pied de tableau,
     # ratant une bascule de fenêtre survenue pendant le scan.
     kz_now = get_current_killzone()
@@ -1588,7 +1572,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     _kpis = [
         ("A+ PREMIUM",  a_plus,  "#a78bfa", ICON_TARGET),
         ("GRADE A",     a_grade, "#60a5fa", ICON_TARGET),
-        ("WATCHLIST",   b_watch, "#7a84a0", ICON_CLOCK),
+        ("WATCHLIST",   b_watch, "#8f99b5", ICON_CLOCK),
         ("LONG ACTIFS", longs,   "#5eead4", icon_arrow(True, 12)),
         ("SHORT ACTIFS",shorts,  "#f472b6", icon_arrow(False, 12)),
         ("FORCE MAX",   max_mom, "#f9a8d4", ICON_BOLT),
@@ -1604,21 +1588,21 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     # ── STYLES ───────────────────────────────────────────────────
     # ── PALETTE DES GRADES ───────────────────────────────────────
     GRADE_STYLE = {
-        "A+": {"color": "#c4b5fd", "line": "#a78bfa", "bg": "rgba(167,139,250,.055)", "label": "A+"},
-        "A":  {"color": "#9cc7fd", "line": "#60a5fa", "bg": "rgba(96,165,250,.04)",   "label": "A"},
-        "B+": {"color": "#a9f3e6", "line": "#5eead4", "bg": "transparent",            "label": "B+"},
-        "B":  {"color": "#8b95af", "line": "#49516a", "bg": "transparent",            "label": "B"},
-        "C":  {"color": "#5b6480", "line": "#333b52", "bg": "transparent",            "label": "C"},
+        "A+": {"color": "#d4c8ff", "line": "#a78bfa", "bg": "rgba(167,139,250,.05)", "label": "A+"},
+        "A":  {"color": "#b0d3ff", "line": "#60a5fa", "bg": "rgba(96,165,250,.035)", "label": "A"},
+        "B+": {"color": "#b8f5ea", "line": "#5eead4", "bg": "transparent",            "label": "B+"},
+        "B":  {"color": "#a3adc5", "line": "#6b7491", "bg": "transparent",            "label": "B"},
+        "C":  {"color": "#7a84a0", "line": "#4a5373", "bg": "transparent",            "label": "C"},
     }
 
     def fresh_cell(fresh_str: str, is_fresh: bool) -> str:
         txt = fresh_str.replace("⚡", "").replace("⏳", "").strip()
-        col = "#5eead4" if is_fresh else "#49516a"
+        col = "#5eead4" if is_fresh else "#6b7491"
         ico = ICON_BOLT if is_fresh else ICON_CLOCK
         dot = (f'<span class="bs-dot" style="width:4px;height:4px;border-radius:50%;'
-               f'background:{col};box-shadow:0 0 7px {col}"></span>' if is_fresh else "")
-        bg  = "rgba(94,234,212,.09)" if is_fresh else "rgba(73,81,106,.09)"
-        bd  = "rgba(94,234,212,.24)" if is_fresh else "rgba(73,81,106,.22)"
+               f'background:{col};box-shadow:0 0 3px {col}"></span>' if is_fresh else "")
+        bg  = "rgba(94,234,212,.08)" if is_fresh else "rgba(107,116,145,.1)"
+        bd  = "rgba(94,234,212,.32)" if is_fresh else "rgba(107,116,145,.3)"
         return (f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
                 f'background:{bg};border:1px solid {bd};padding:4px 10px;border-radius:30px;'
                 f'font-family:\'JetBrains Mono\',monospace;font-size:11.5px;font-weight:500;'
@@ -1626,17 +1610,16 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 
     def sig_cell(sig: str, is_bull: bool) -> str:
         expired = "expiré" in sig
-        col     = ("#5eead4" if is_bull else "#f472b6") if not expired else "#49516a"
+        col     = ("#5eead4" if is_bull else "#f472b6") if not expired else "#6b7491"
         word    = "LONG" if is_bull else "SHORT"
         if expired:
             return (f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
                     f'font-size:11.5px;letter-spacing:.1em;font-weight:600">'
-                    f'<span style="display:inline-flex;opacity:.7">{icon_arrow(is_bull, 10)}</span>'
+                    f'<span style="display:inline-flex;opacity:.75">{icon_arrow(is_bull, 10)}</span>'
                     f'{word} · EXPIRÉ</span>')
         return (f'<span style="display:inline-flex;align-items:center;gap:7px;color:{col};'
-                f'background:{col}14;border:1px solid {col}33;padding:5px 12px 5px 10px;'
-                f'border-radius:9px;font-size:13px;font-weight:700;letter-spacing:.09em;'
-                f'box-shadow:0 0 22px -10px {col}">'
+                f'background:{col}12;border:1px solid {col}4d;padding:5px 12px 5px 10px;'
+                f'border-radius:9px;font-size:13px;font-weight:700;letter-spacing:.09em">'
                 f'<span style="display:inline-flex">{icon_arrow(is_bull, 12)}</span>{word}</span>')
 
     BIAS_MAP = {
@@ -1648,7 +1631,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 
     def bias_cell(b: str) -> str:
         if b not in BIAS_MAP:
-            return ('<span style="color:#49516a;font-size:13px;letter-spacing:.04em">'
+            return ('<span style="color:#6b7491;font-size:13px;letter-spacing:.04em">'
                     '— Neutral</span>')
         label, col, strength, up = BIAS_MAP[b]
         arrows = "".join(f'<span style="display:inline-flex">{icon_arrow(up, 10)}</span>'
@@ -1659,16 +1642,16 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
                 f'{arrows}<span style="margin-left:5px">{label}</span></span>')
 
     ZONE_MAP = {
-        "DISCOUNT":  ("#60a5fa", "rgba(96,165,250,.11)",  "rgba(96,165,250,.26)"),
-        "PREMIUM":   ("#f9a8d4", "rgba(249,168,212,.11)", "rgba(249,168,212,.26)"),
-        "EXT HIGH":  ("#f472b6", "rgba(244,114,182,.13)", "rgba(244,114,182,.34)"),
-        "EXT LOW":   ("#5eead4", "rgba(94,234,212,.13)",  "rgba(94,234,212,.34)"),
-        "EQUILIBRE": ("#7a84a0", "rgba(122,132,160,.08)", "rgba(122,132,160,.2)"),
+        "DISCOUNT":  ("#60a5fa", "rgba(96,165,250,.09)",  "rgba(96,165,250,.38)"),
+        "PREMIUM":   ("#f9a8d4", "rgba(249,168,212,.09)", "rgba(249,168,212,.38)"),
+        "EXT HIGH":  ("#f472b6", "rgba(244,114,182,.11)", "rgba(244,114,182,.48)"),
+        "EXT LOW":   ("#5eead4", "rgba(94,234,212,.11)",  "rgba(94,234,212,.48)"),
+        "EQUILIBRE": ("#8f99b5", "rgba(143,153,181,.09)", "rgba(143,153,181,.3)"),
     }
 
     def zone_cell(z: str, mn_bonus: bool) -> str:
         col, bg, bd = ZONE_MAP.get(z, ZONE_MAP["EQUILIBRE"])
-        moon = (f'<span style="color:#c4b5fd;display:inline-flex;margin-left:7px" '
+        moon = (f'<span style="color:#d4c8ff;display:inline-flex;margin-left:7px" '
                 f'title="Confluence midnight open">{ICON_MOON}</span>' if mn_bonus else "")
         return (f'<span style="display:inline-flex;align-items:center">'
                 f'<span style="color:{col};background:{bg};border:1px solid {bd};'
@@ -1678,33 +1661,33 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     def score_bar(score):
         """Score négatif possible (malus ADR/Bias) — affiché tel quel."""
         if score >= 85:
-            grad, col, glow = "linear-gradient(90deg,#60a5fa,#a78bfa 55%,#f472b6)", "#c4b5fd", "0 0 14px -2px rgba(167,139,250,.9)"
+            grad, col, glow = "linear-gradient(90deg,#60a5fa,#a78bfa 55%,#f472b6)", "#d4c8ff", "0 0 5px -1px rgba(167,139,250,.5)"
         elif score >= 70:
-            grad, col, glow = "linear-gradient(90deg,#5eead4,#60a5fa)", "#9cc7fd", "0 0 12px -3px rgba(96,165,250,.8)"
+            grad, col, glow = "linear-gradient(90deg,#5eead4,#60a5fa)", "#b0d3ff", "0 0 4px -1px rgba(96,165,250,.45)"
         elif score >= 55:
-            grad, col, glow = "linear-gradient(90deg,#3f6f8f,#5eead4)", "#a9f3e6", "none"
+            grad, col, glow = "linear-gradient(90deg,#3f6f8f,#5eead4)", "#b8f5ea", "none"
         elif score >= 40:
-            grad, col, glow = "linear-gradient(90deg,#39405a,#7a84a0)", "#8b95af", "none"
+            grad, col, glow = "linear-gradient(90deg,#4a5373,#8f99b5)", "#a3adc5", "none"
         else:
-            grad, col, glow = "linear-gradient(90deg,#2a3049,#49516a)", "#5b6480", "none"
+            grad, col, glow = "linear-gradient(90deg,#363f5c,#6b7491)", "#7a84a0", "none"
         width = max(3, min(score, 103) / 103 * 100) if score >= 0 else 3
         return (f'<div style="display:flex;align-items:center;gap:11px">'
                 f'<span style="color:{col};font-weight:600;font-size:16px;'
                 f'font-family:\'JetBrains Mono\',monospace;font-variant-numeric:tabular-nums;'
                 f'min-width:30px;text-align:right">{score}</span>'
-                f'<div style="width:62px;height:4px;background:rgba(40,48,73,.85);'
+                f'<div style="width:62px;height:4px;background:rgba(54,66,100,.8);'
                 f'border-radius:3px;overflow:hidden">'
                 f'<div style="width:{width}%;height:100%;background:{grad};'
                 f'border-radius:3px;box-shadow:{glow}"></div></div></div>')
 
     def adr_cell(v, label="ADR", consumed: float | None = None):
         if v is None:
-            return '<span style="color:#3b4258">—</span>'
+            return '<span style="color:#5b6480">—</span>'
         formatted = f"{v:.5f}" if v < 1.0 else f"{v:.2f}"
         tag_color = "#60a5fa" if label == "ADR" else "#c4b5fd"
         head = (f'<div style="display:flex;align-items:baseline;gap:7px">'
                 f'<span style="color:{tag_color};font-size:9px;font-weight:700;letter-spacing:.12em;'
-                f'background:{tag_color}14;border:1px solid {tag_color}2e;padding:2px 6px;'
+                f'background:{tag_color}12;border:1px solid {tag_color}40;padding:2px 6px;'
                 f'border-radius:5px">{label}</span>'
                 f'<span style="color:var(--ink-2);font-family:\'JetBrains Mono\',monospace;'
                 f'font-size:13px;font-variant-numeric:tabular-nums">{formatted}</span></div>')
@@ -1716,10 +1699,10 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         else:               c = "#f472b6"
         fill = int(min(max(consumed, 0), 100))
         gauge = (f'<div style="display:flex;align-items:center;gap:7px;margin-top:6px">'
-                 f'<div style="width:52px;height:3px;background:rgba(40,48,73,.85);'
+                 f'<div style="width:52px;height:3px;background:rgba(54,66,100,.8);'
                  f'border-radius:2px;overflow:hidden">'
-                 f'<div style="width:{fill}%;height:100%;background:{c};border-radius:2px;'
-                 f'box-shadow:0 0 8px -2px {c}"></div></div>'
+                 f'<div style="width:{fill}%;height:100%;background:{c};border-radius:2px">'
+                 f'</div></div>'
                  f'<span style="color:{c};font-size:9.5px;font-family:\'JetBrains Mono\',monospace;'
                  f'font-weight:700">{consumed:.0f}%</span></div>')
         return f'<div>{head}{gauge}</div>'
@@ -1728,20 +1711,20 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         col = "#5eead4" if is_bull else "#f472b6"
         seg = "".join(
             (f'<div style="width:15px;height:7px;border-radius:2px;background:{col};'
-             f'box-shadow:0 0 9px -2px {col}"></div>') if i < momentum_score else
-            '<div style="width:15px;height:7px;border-radius:2px;background:rgba(40,48,73,.9)"></div>'
+             f'box-shadow:0 0 4px -1px {col}"></div>') if i < momentum_score else
+            '<div style="width:15px;height:7px;border-radius:2px;background:rgba(54,66,100,.85)"></div>'
             for i in range(3)
         )
         bars = f'<div style="display:flex;gap:4px;align-items:center">{seg}</div>'
         if delta is not None:
-            dc = ("#5eead4" if delta >= 1.5 else "#f472b6" if delta <= -1.5 else "#7a84a0")
+            dc = ("#5eead4" if delta >= 1.5 else "#f472b6" if delta <= -1.5 else "#8f99b5")
             sign = "+" if delta > 0 else ""
-            dh = (f'<span style="color:{dc};background:{dc}12;border:1px solid {dc}26;'
+            dh = (f'<span style="color:{dc};background:{dc}10;border:1px solid {dc}38;'
                   f'padding:2px 7px;border-radius:6px;font-weight:700;font-size:11px;'
                   f'font-family:\'JetBrains Mono\',monospace;margin-left:10px;'
                   f'font-variant-numeric:tabular-nums">{sign}{delta:.1f}</span>')
         else:
-            dh = ('<span style="color:#3b4258;margin-left:10px;font-size:10.5px;'
+            dh = ('<span style="color:#5b6480;margin-left:10px;font-size:10.5px;'
                   'font-family:\'JetBrains Mono\',monospace">n/a</span>')
         return f'<div style="display:flex;align-items:center">{bars}{dh}</div>'
 
@@ -1749,24 +1732,24 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     html = """
 <style>
 .sc-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:17px;
-  background:linear-gradient(180deg,rgba(16,20,34,.9),rgba(11,14,25,.9));
-  box-shadow:0 26px 60px -34px rgba(0,0,0,.95)}
+  background:linear-gradient(180deg,rgba(15,19,32,.95),rgba(10,13,23,.95));
+  box-shadow:0 20px 44px -30px rgba(0,0,0,.9)}
 .sc-tbl{width:100%;border-collapse:separate;border-spacing:0;
   font-family:'Inter Tight',sans-serif;font-size:14px}
 .sc-tbl thead th{
   padding:14px 18px;text-align:left;white-space:nowrap;
   color:var(--muted);font-size:9.5px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;
-  background:rgba(20,25,38,.92);border-bottom:1px solid var(--line);
+  background:rgba(19,24,38,.96);border-bottom:1px solid var(--line-2);
   position:sticky;top:0;backdrop-filter:blur(9px);z-index:2}
-.sc-tbl td{padding:15px 18px;border-bottom:1px solid rgba(28,34,51,.66);vertical-align:middle}
+.sc-tbl td{padding:15px 18px;border-bottom:1px solid rgba(38,47,71,.8);vertical-align:middle}
 .sc-tbl tbody tr{transition:background .14s ease}
-.sc-tbl tbody tr:hover td{background:rgba(26,33,50,.55)}
+.sc-tbl tbody tr:hover td{background:rgba(27,35,53,.6)}
 .sc-tbl tbody tr:last-child td{border-bottom:none}
 .sc-tbl td:first-child{position:relative;padding-left:20px}
 .sc-tbl td:first-child::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;
   border-radius:0 3px 3px 0}
-.rail-bull td:first-child::before{background:linear-gradient(180deg,#5eead4,rgba(94,234,212,.15))}
-.rail-bear td:first-child::before{background:linear-gradient(180deg,#f472b6,rgba(244,114,182,.15))}
+.rail-bull td:first-child::before{background:linear-gradient(180deg,#5eead4,rgba(94,234,212,.2))}
+.rail-bear td:first-child::before{background:linear-gradient(180deg,#f472b6,rgba(244,114,182,.2))}
 .ticker{font-size:17.5px;font-weight:600;color:var(--ink);white-space:nowrap;letter-spacing:-.01em;
   font-variant-numeric:tabular-nums}
 .grade-pill{display:inline-block;padding:3px 9px;border-radius:7px;font-size:10.5px;font-weight:700;
@@ -1792,7 +1775,8 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         fresh     = "⚡" in str(row.get("Fraîcheur", ""))
         gs        = GRADE_STYLE.get(grade, GRADE_STYLE["C"])
         score     = int(row.get("Score /100", 0))
-        ticker    = str(row.get("Actif + Note", "")).split("  ")[0].strip()
+        ticker_raw = str(row.get("Actif + Note", "")).split("  ")[0].strip()
+        ticker    = DISPLAY_NAMES.get(ticker_raw, ticker_raw)
         sig       = str(row.get("Signal", "—"))
         adr_v     = row.get("ADR")
         adr_lbl   = str(row.get("ADR Label", "ADR"))
@@ -1806,13 +1790,13 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         is_bull   = bool(row.get("signal_is_bull", True))
         mn_bonus  = bool(row.get("Midnight Bonus", False))
 
-        align_tag = (f'<span class="chip" style="background:rgba(244,114,182,.1);'
-                     f'border:1px solid rgba(244,114,182,.26);color:#f472b6">'
+        align_tag = (f'<span class="chip" style="background:rgba(244,114,182,.09);'
+                     f'border:1px solid rgba(244,114,182,.38);color:#f472b6">'
                      f'{ICON_ALERT}COUNTER</span>') if alignment == "COUNTER" else ""
 
         if kz_now and fresh:
             _kc = killzone_color(kz_now)
-            kz_tag = (f'<span class="chip" style="background:{_kc}14;border:1px solid {_kc}2e;'
+            kz_tag = (f'<span class="chip" style="background:{_kc}10;border:1px solid {_kc}40;'
                       f'color:{_kc}">{killzone_badge(kz_now)}</span>')
         else:
             kz_tag = ""
@@ -1821,14 +1805,14 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         rail   = "rail-bull" if is_bull else "rail-bear"
         row_style = f'background:{row_bg}'
         if fresh and grade == "A+":
-            row_style += ';box-shadow:inset 0 0 44px -14px rgba(167,139,250,.22)'
+            row_style += ';box-shadow:inset 0 0 36px -16px rgba(167,139,250,.12)'
 
         html += f"""<tr class="{rail}" style="{row_style}">
   <td>{fresh_cell(fresh_str, fresh)}</td>
   <td style="white-space:nowrap">
     <span class="ticker">{ticker}</span>
-    <span class="grade-pill" style="color:{gs['color']};background:{gs['line']}1a;
-          border:1px solid {gs['line']}45">{gs['label']}</span>
+    <span class="grade-pill" style="color:{gs['color']};background:{gs['line']}18;
+          border:1px solid {gs['line']}66">{gs['label']}</span>
     {align_tag}
   </td>
   <td style="white-space:nowrap">{sig_cell(sig, is_bull)}{kz_tag}</td>
@@ -1840,23 +1824,23 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 </tr>"""
 
     html += "</tbody></table></div>"
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(_html(html), unsafe_allow_html=True)
 
     _kz_foot = (f'<span style="color:{killzone_color(kz_now)}">'
                 f'killzone {killzone_badge(kz_now)} active</span>' if kz_now else
-                '<span style="color:#3b4258">hors killzone</span>')
+                '<span style="color:#5b6480">hors killzone</span>')
     st.markdown(_html(f"""
     <div style="display:flex;align-items:center;justify-content:flex-end;gap:14px;
                 margin-top:14px;font-size:10.5px;letter-spacing:.1em;font-weight:600;
-                text-transform:uppercase;color:var(--muted-2)">
+                text-transform:uppercase;color:var(--muted)">
       <span>{len(df)} signal(s)</span>
-      <span style="color:#232b40">•</span>
+      <span style="color:#364264">•</span>
       <span style="font-family:'JetBrains Mono',monospace;text-transform:none;letter-spacing:.02em">
         {elapsed}s</span>
-      <span style="color:#232b40">•</span>
+      <span style="color:#364264">•</span>
       <span style="font-family:'JetBrains Mono',monospace;text-transform:none;letter-spacing:.02em">
         {datetime.now().strftime('%H:%M:%S')}</span>
-      <span style="color:#232b40">•</span>
+      <span style="color:#364264">•</span>
       {_kz_foot}
     </div>
     """), unsafe_allow_html=True)
