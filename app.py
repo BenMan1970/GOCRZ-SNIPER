@@ -120,7 +120,7 @@ def killzone_badge(kz: str) -> str:
     return KZ_STYLE.get(kz, ("", ""))[0]
 
 def killzone_color(kz: str) -> str:
-    return KZ_STYLE.get(kz, ("", "#8f99b5"))[1]
+    return KZ_STYLE.get(kz, ("", "#a8b2cc"))[1]
 
 
 # ----------------------------------------------------------------
@@ -1211,11 +1211,11 @@ def main():
     @import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
     :root{
-      --bg:#05070d;
-      --surface:#0d111d;   --surface-3:#1b2335;
-      --line:#262f47;      --line-2:#364264;
-      --ink:#f4f6fb;       --ink-2:#cbd3e6;
-      --muted:#8f99b5;     --muted-2:#6b7491;
+      --bg:#03050a;
+      --surface:#090c16;   --surface-3:#1f2940;
+      --line:#323d5c;      --line-2:#46547d;
+      --ink:#ffffff;       --ink-2:#e1e7f5;
+      --muted:#a8b2cc;     --muted-2:#8791ae;
       --azure-2:#9cc7fd;   --iris:#a78bfa;
     }
 
@@ -1289,7 +1289,7 @@ def main():
       background:transparent!important;padding:9px 12px!important;text-align:left!important;
     }
     [data-testid="stExpander"] td{
-      color:var(--ink-2)!important;border-bottom:1px solid rgba(38,47,71,.7)!important;
+      color:var(--ink-2)!important;border-bottom:1px solid rgba(50,61,92,.7)!important;
       padding:9px 12px!important;
     }
     [data-testid="stExpander"] code{
@@ -1572,7 +1572,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
     _kpis = [
         ("A+ PREMIUM",  a_plus,  "#a78bfa", ICON_TARGET),
         ("GRADE A",     a_grade, "#60a5fa", ICON_TARGET),
-        ("WATCHLIST",   b_watch, "#8f99b5", ICON_CLOCK),
+        ("WATCHLIST",   b_watch, "#a8b2cc", ICON_CLOCK),
         ("LONG ACTIFS", longs,   "#5eead4", icon_arrow(True, 12)),
         ("SHORT ACTIFS",shorts,  "#f472b6", icon_arrow(False, 12)),
         ("FORCE MAX",   max_mom, "#f9a8d4", ICON_BOLT),
@@ -1591,18 +1591,18 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         "A+": {"color": "#d4c8ff", "line": "#a78bfa", "bg": "rgba(167,139,250,.05)", "label": "A+"},
         "A":  {"color": "#b0d3ff", "line": "#60a5fa", "bg": "rgba(96,165,250,.035)", "label": "A"},
         "B+": {"color": "#b8f5ea", "line": "#5eead4", "bg": "transparent",            "label": "B+"},
-        "B":  {"color": "#a3adc5", "line": "#6b7491", "bg": "transparent",            "label": "B"},
-        "C":  {"color": "#7a84a0", "line": "#4a5373", "bg": "transparent",            "label": "C"},
+        "B":  {"color": "#bcc6dc", "line": "#8791ae", "bg": "transparent",            "label": "B"},
+        "C":  {"color": "#97a2bf", "line": "#5d6a92", "bg": "transparent",            "label": "C"},
     }
 
     def fresh_cell(fresh_str: str, is_fresh: bool) -> str:
         txt = fresh_str.replace("⚡", "").replace("⏳", "").strip()
-        col = "#5eead4" if is_fresh else "#6b7491"
+        col = "#5eead4" if is_fresh else "#8791ae"
         ico = ICON_BOLT if is_fresh else ICON_CLOCK
         dot = (f'<span class="bs-dot" style="width:4px;height:4px;border-radius:50%;'
                f'background:{col};box-shadow:0 0 3px {col}"></span>' if is_fresh else "")
-        bg  = "rgba(94,234,212,.08)" if is_fresh else "rgba(107,116,145,.1)"
-        bd  = "rgba(94,234,212,.32)" if is_fresh else "rgba(107,116,145,.3)"
+        bg  = "rgba(94,234,212,.08)" if is_fresh else "rgba(135,145,174,.1)"
+        bd  = "rgba(94,234,212,.32)" if is_fresh else "rgba(135,145,174,.3)"
         return (f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
                 f'background:{bg};border:1px solid {bd};padding:4px 10px;border-radius:30px;'
                 f'font-family:\'JetBrains Mono\',monospace;font-size:11.5px;font-weight:500;'
@@ -1610,7 +1610,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 
     def sig_cell(sig: str, is_bull: bool) -> str:
         expired = "expiré" in sig
-        col     = ("#5eead4" if is_bull else "#f472b6") if not expired else "#6b7491"
+        col     = ("#5eead4" if is_bull else "#f472b6") if not expired else "#8791ae"
         word    = "LONG" if is_bull else "SHORT"
         if expired:
             return (f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
@@ -1631,7 +1631,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 
     def bias_cell(b: str) -> str:
         if b not in BIAS_MAP:
-            return ('<span style="color:#6b7491;font-size:13px;letter-spacing:.04em">'
+            return ('<span style="color:#8791ae;font-size:13px;letter-spacing:.04em">'
                     '— Neutral</span>')
         label, col, strength, up = BIAS_MAP[b]
         arrows = "".join(f'<span style="display:inline-flex">{icon_arrow(up, 10)}</span>'
@@ -1646,7 +1646,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         "PREMIUM":   ("#f9a8d4", "rgba(249,168,212,.09)", "rgba(249,168,212,.38)"),
         "EXT HIGH":  ("#f472b6", "rgba(244,114,182,.11)", "rgba(244,114,182,.48)"),
         "EXT LOW":   ("#5eead4", "rgba(94,234,212,.11)",  "rgba(94,234,212,.48)"),
-        "EQUILIBRE": ("#8f99b5", "rgba(143,153,181,.09)", "rgba(143,153,181,.3)"),
+        "EQUILIBRE": ("#a8b2cc", "rgba(168,178,204,.09)", "rgba(168,178,204,.3)"),
     }
 
     def zone_cell(z: str, mn_bonus: bool) -> str:
@@ -1667,22 +1667,22 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         elif score >= 55:
             grad, col, glow = "linear-gradient(90deg,#3f6f8f,#5eead4)", "#b8f5ea", "none"
         elif score >= 40:
-            grad, col, glow = "linear-gradient(90deg,#4a5373,#8f99b5)", "#a3adc5", "none"
+            grad, col, glow = "linear-gradient(90deg,#5d6a92,#a8b2cc)", "#bcc6dc", "none"
         else:
-            grad, col, glow = "linear-gradient(90deg,#363f5c,#6b7491)", "#7a84a0", "none"
+            grad, col, glow = "linear-gradient(90deg,#363f5c,#8791ae)", "#97a2bf", "none"
         width = max(3, min(score, 103) / 103 * 100) if score >= 0 else 3
         return (f'<div style="display:flex;align-items:center;gap:11px">'
                 f'<span style="color:{col};font-weight:600;font-size:16px;'
                 f'font-family:\'JetBrains Mono\',monospace;font-variant-numeric:tabular-nums;'
                 f'min-width:30px;text-align:right">{score}</span>'
-                f'<div style="width:62px;height:4px;background:rgba(54,66,100,.8);'
+                f'<div style="width:62px;height:4px;background:rgba(70,84,125,.8);'
                 f'border-radius:3px;overflow:hidden">'
                 f'<div style="width:{width}%;height:100%;background:{grad};'
                 f'border-radius:3px;box-shadow:{glow}"></div></div></div>')
 
     def adr_cell(v, label="ADR", consumed: float | None = None):
         if v is None:
-            return '<span style="color:#5b6480">—</span>'
+            return '<span style="color:#7480a0">—</span>'
         formatted = f"{v:.5f}" if v < 1.0 else f"{v:.2f}"
         tag_color = "#60a5fa" if label == "ADR" else "#c4b5fd"
         head = (f'<div style="display:flex;align-items:baseline;gap:7px">'
@@ -1699,7 +1699,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         else:               c = "#f472b6"
         fill = int(min(max(consumed, 0), 100))
         gauge = (f'<div style="display:flex;align-items:center;gap:7px;margin-top:6px">'
-                 f'<div style="width:52px;height:3px;background:rgba(54,66,100,.8);'
+                 f'<div style="width:52px;height:3px;background:rgba(70,84,125,.8);'
                  f'border-radius:2px;overflow:hidden">'
                  f'<div style="width:{fill}%;height:100%;background:{c};border-radius:2px">'
                  f'</div></div>'
@@ -1712,19 +1712,19 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
         seg = "".join(
             (f'<div style="width:15px;height:7px;border-radius:2px;background:{col};'
              f'box-shadow:0 0 4px -1px {col}"></div>') if i < momentum_score else
-            '<div style="width:15px;height:7px;border-radius:2px;background:rgba(54,66,100,.85)"></div>'
+            '<div style="width:15px;height:7px;border-radius:2px;background:rgba(70,84,125,.85)"></div>'
             for i in range(3)
         )
         bars = f'<div style="display:flex;gap:4px;align-items:center">{seg}</div>'
         if delta is not None:
-            dc = ("#5eead4" if delta >= 1.5 else "#f472b6" if delta <= -1.5 else "#8f99b5")
+            dc = ("#5eead4" if delta >= 1.5 else "#f472b6" if delta <= -1.5 else "#a8b2cc")
             sign = "+" if delta > 0 else ""
             dh = (f'<span style="color:{dc};background:{dc}10;border:1px solid {dc}38;'
                   f'padding:2px 7px;border-radius:6px;font-weight:700;font-size:11px;'
                   f'font-family:\'JetBrains Mono\',monospace;margin-left:10px;'
                   f'font-variant-numeric:tabular-nums">{sign}{delta:.1f}</span>')
         else:
-            dh = ('<span style="color:#5b6480;margin-left:10px;font-size:10.5px;'
+            dh = ('<span style="color:#7480a0;margin-left:10px;font-size:10.5px;'
                   'font-family:\'JetBrains Mono\',monospace">n/a</span>')
         return f'<div style="display:flex;align-items:center">{bars}{dh}</div>'
 
@@ -1741,7 +1741,7 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
   color:var(--muted);font-size:9.5px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;
   background:rgba(19,24,38,.96);border-bottom:1px solid var(--line-2);
   position:sticky;top:0;backdrop-filter:blur(9px);z-index:2}
-.sc-tbl td{padding:15px 18px;border-bottom:1px solid rgba(38,47,71,.8);vertical-align:middle}
+.sc-tbl td{padding:15px 18px;border-bottom:1px solid rgba(50,61,92,.8);vertical-align:middle}
 .sc-tbl tbody tr{transition:background .14s ease}
 .sc-tbl tbody tr:hover td{background:rgba(27,35,53,.6)}
 .sc-tbl tbody tr:last-child td{border-bottom:none}
@@ -1828,19 +1828,19 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 
     _kz_foot = (f'<span style="color:{killzone_color(kz_now)}">'
                 f'killzone {killzone_badge(kz_now)} active</span>' if kz_now else
-                '<span style="color:#5b6480">hors killzone</span>')
+                '<span style="color:#7480a0">hors killzone</span>')
     st.markdown(_html(f"""
     <div style="display:flex;align-items:center;justify-content:flex-end;gap:14px;
                 margin-top:14px;font-size:10.5px;letter-spacing:.1em;font-weight:600;
                 text-transform:uppercase;color:var(--muted)">
       <span>{len(df)} signal(s)</span>
-      <span style="color:#364264">•</span>
+      <span style="color:#46547d">•</span>
       <span style="font-family:'JetBrains Mono',monospace;text-transform:none;letter-spacing:.02em">
         {elapsed}s</span>
-      <span style="color:#364264">•</span>
+      <span style="color:#46547d">•</span>
       <span style="font-family:'JetBrains Mono',monospace;text-transform:none;letter-spacing:.02em">
         {datetime.now().strftime('%H:%M:%S')}</span>
-      <span style="color:#364264">•</span>
+      <span style="color:#46547d">•</span>
       {_kz_foot}
     </div>
     """), unsafe_allow_html=True)
