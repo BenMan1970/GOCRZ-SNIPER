@@ -1,5 +1,9 @@
-streamlit>=1.28.0
-pandas>=2.0.0
-numpy>=1.24.0
-oandapyV20>=0.6.3
-pytz>=2024.1
+streamlit==1.66.0
+pandas==3.0.6
+numpy==2.5.4
+pytz==2026.5
+tzdata==2026.5
+requests==2.34.2
+pyarrow==26.0.0
+pillow==12.3.0
+

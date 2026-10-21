@@ -1,0 +1,29 @@
+{
+ "recorded_at": "2026-10-20T22:25:07.271758+00:00",
+ "environment": "practice",
+ "api_params": {
+  "price": "M",
+  "alignmentTimezone": "America/New_York",
+  "dailyAlignment": 17,
+  "weeklyAlignment": "Friday"
+ },
+ "bulk_specs": {
+  "M15": 5000,
+  "H1": 5000,
+  "H4": 2000,
+  "D": 300,
+  "W": 250,
+  "M": 80
+ },
+ "test_instruments": [
+  "EUR_USD",
+  "USD_JPY",
+  "GBP_USD",
+  "AUD_NZD",
+  "XAU_USD",
+  "US30_USD",
+  "DE30_EUR",
+  "NAS100_USD"
+ ],
+ "note": "No account id or token stored. Parsed mid candles only."
+}
