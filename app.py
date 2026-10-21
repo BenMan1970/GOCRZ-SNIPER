@@ -1,0 +1,1852 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import oandapyV20
+import oandapyV20.endpoints.instruments as instruments
+from datetime import datetime
+import pytz
+import time
+import threading
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+
+# ================================================================
+#  BLUESTAR SNIPER V16  —  ICT SIGNAL ENGINE
+#
+#  Signal engine  : HMA 20 · M15
+#  Trend filter   : MTF Institutionnel (M/W/D/4H/1H/15m)
+#  Zone ICT       : Midnight Open · Premium / Discount · PDH/PDL
+#  Momentum       : ADX Wilder · RSI · MACD · ZLEMA
+#  Volatilité     : ADR (forex/métaux/crypto) · ATR (indices)
+#  FVG            : LuxAlgo M15 — détection + mitigation auto
+#  Strength       : Currency Strength delta base/quote
+#  Scoring        : /100 — grades A+/A/B+/B/C
+#  Concurrence    : ThreadPoolExecutor · client OANDA par thread
+#  Timezone       : Killzones UTC fixe (DST-proof) · NY midnight
+# ================================================================
+
+logger = logging.getLogger("bluestar_sniper")
+# handler explicite — logging.basicConfig() est une no-op en Streamlit Cloud
+# car Streamlit configure ses propres handlers avant l'import du module.
+if not logger.handlers:
+    _log_handler = logging.StreamHandler()
+    _log_handler.setFormatter(logging.Formatter(
+        "[%(asctime)s] %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S"
+    ))
+    logger.addHandler(_log_handler)
+    logger.setLevel(logging.WARNING)
+    logger.propagate = False   # ne pas propager au root logger Streamlit
+
+# ----------------------------------------------------------------
+#  HELPER
+# ----------------------------------------------------------------
+def is_valid_df(df, min_rows: int = 1) -> bool:
+    """Retourne True si df est un DataFrame non-vide avec au moins min_rows lignes."""
+    return df is not None and isinstance(df, pd.DataFrame) and len(df) >= min_rows
+
+
+# ----------------------------------------------------------------
+#  KILLZONE DETECTOR  —  DST-aware (corrigé V16.1)
+# ----------------------------------------------------------------
+# V16 déclarait des plages UTC fixes en commentant "DST-proof" — c'était faux : de
+# novembre à mars, une plage UTC figée dérive d'~1h par rapport à la vraie fenêtre en
+# heure locale. Fenêtres redéfinies en heure NY locale (source de vérité du fichier,
+# déjà utilisée pour midnight_open/adr_consumed) et converties dynamiquement via pytz,
+# qui gère EDT/EST automatiquement :
+#   London  = 03:00-04:30 ET
+#   NY AM   = 09:30-11:00 ET
+#   Asia    = 00:00-02:00 UTC (Tokyo n'observe pas le DST — UTC fixe correct ici)
+KILLZONES_NY_LOCAL = {
+    "London": ((3,  0), (4,  30)),
+    "NY AM":  ((9, 30), (11,  0)),
+}
+KILLZONES_UTC_FIXED = {
+    "Asia": ((0, 0), (2, 0)),
+}
+
+INDICES = {"US30_USD", "NAS100_USD", "DE30_EUR"}
+
+# ----------------------------------------------------------------
+#  UNIVERS SCANNÉ
+# ----------------------------------------------------------------
+# Le DAX (40 valeurs) est coté chez OANDA sous le symbole API historique "DE30_EUR"
+# (le broker n'a pas renommé l'instrument). On garde ce symbole pour les requêtes et on
+# affiche "DE40" dans l'interface via DISPLAY_NAMES.
+# Crypto : OANDA expose BTC_USD et ETH_USD (Solana n'est pas listé chez OANDA).
+ASSETS = [
+    "EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF",
+    "AUD_USD", "USD_CAD", "NZD_USD",
+    "EUR_GBP", "EUR_JPY", "EUR_CHF",
+    "EUR_AUD", "EUR_CAD", "EUR_NZD",
+    "GBP_JPY", "GBP_CHF", "GBP_AUD",
+    "GBP_CAD", "GBP_NZD",
+    "AUD_JPY", "CAD_JPY", "CHF_JPY", "NZD_JPY",
+    "AUD_CAD", "AUD_CHF", "AUD_NZD",
+    "CAD_CHF", "NZD_CAD", "NZD_CHF",
+    "XAU_USD",
+    "US30_USD", "NAS100_USD", "DE30_EUR",
+    "BTC_USD", "ETH_USD",
+]
+
+DISPLAY_NAMES = {"DE30_EUR": "DE40"}
+
+def get_current_killzone() -> str:
+    ny_tz  = pytz.timezone("America/New_York")
+    now_ny = datetime.now(ny_tz)
+    t_ny   = now_ny.hour * 60 + now_ny.minute
+    for name, (start, end) in KILLZONES_NY_LOCAL.items():
+        s = start[0] * 60 + start[1]
+        e = end[0]   * 60 + end[1]
+        if s <= t_ny <= e:
+            return name
+    now_utc = datetime.now(pytz.UTC)
+    t_utc   = now_utc.hour * 60 + now_utc.minute
+    for name, (start, end) in KILLZONES_UTC_FIXED.items():
+        s = start[0] * 60 + start[1]
+        e = end[0]   * 60 + end[1]
+        if s <= t_utc <= e:
+            return name
+    return ""
+
+KZ_STYLE = {
+    "London": ("LONDON",      "#60a5fa"),
+    "NY AM":  ("NEW YORK AM", "#a78bfa"),
+    "Asia":   ("ASIA",        "#5eead4"),
+}
+
+def killzone_badge(kz: str) -> str:
+    return KZ_STYLE.get(kz, ("", ""))[0]
+
+def killzone_color(kz: str) -> str:
+    return KZ_STYLE.get(kz, ("", "#a8b2cc"))[1]
+
+
+# ----------------------------------------------------------------
+#  ICONOGRAPHIE — SVG inline, hérite de currentColor
+# ----------------------------------------------------------------
+def icon_arrow(up: bool, size: int = 12) -> str:
+    d = "M7 2.4 11.7 9.6H2.3z" if up else "M7 11.6 2.3 4.4h9.4z"
+    return (f'<svg width="{size}" height="{size}" viewBox="0 0 14 14" '
+            f'style="vertical-align:-1px"><path d="{d}" fill="currentColor"/></svg>')
+
+ICON_BOLT = ('<svg width="11" height="11" viewBox="0 0 14 14" style="vertical-align:-1px">'
+             '<path d="M8.1 1 3.2 8.1h2.9L5.4 13l5.4-7.4H7.4L8.1 1z" fill="currentColor"/></svg>')
+
+ICON_CLOCK = ('<svg width="11" height="11" viewBox="0 0 14 14" fill="none" style="vertical-align:-1px">'
+              '<circle cx="7" cy="7" r="5.1" stroke="currentColor" stroke-width="1.25"/>'
+              '<path d="M7 4.3V7.2l1.9 1.2" stroke="currentColor" stroke-width="1.25" '
+              'stroke-linecap="round"/></svg>')
+
+ICON_MOON = ('<svg width="11" height="11" viewBox="0 0 14 14" style="vertical-align:-1px">'
+             '<path d="M9.5 9A4.3 4.3 0 0 1 5.2 4.7c0-.8.2-1.6.6-2.2A5 5 0 1 0 11.7 8.4c-.6.4-1.4.6-2.2.6z" '
+             'fill="currentColor"/></svg>')
+
+ICON_ALERT = ('<svg width="11" height="11" viewBox="0 0 14 14" fill="none" style="vertical-align:-1px">'
+              '<path d="M7 2 12.4 11.4H1.6L7 2z" stroke="currentColor" stroke-width="1.15"/>'
+              '<path d="M7 5.6v2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'
+              '<circle cx="7" cy="10" r=".72" fill="currentColor"/></svg>')
+
+ICON_TARGET = ('<svg width="13" height="13" viewBox="0 0 16 16" fill="none">'
+               '<circle cx="8" cy="8" r="6.2" stroke="currentColor" stroke-width="1.2" opacity=".45"/>'
+               '<circle cx="8" cy="8" r="2.6" stroke="currentColor" stroke-width="1.2"/>'
+               '<circle cx="8" cy="8" r="1" fill="currentColor"/></svg>')
+
+
+# ----------------------------------------------------------------
+#  QUANT ENGINE
+# ----------------------------------------------------------------
+class QuantEngine:
+
+    @staticmethod
+    def wma(series, period):
+        weights = np.arange(1, period + 1, dtype=np.float64)
+        w_sum   = weights.sum()
+        arr     = series.to_numpy(dtype=np.float64)
+        n       = len(arr)
+        out     = np.full(n, np.nan)
+        for i in range(period - 1, n):
+            out[i] = np.dot(arr[i - period + 1: i + 1], weights) / w_sum
+        return pd.Series(out, index=series.index)
+
+    @staticmethod
+    def hma(series, period=20):
+        """HMA standard : WMA(2·WMA(n/2) - WMA(n), √n)  — sans EWM parasite"""
+        half   = int(period / 2)
+        sqrt_p = int(np.sqrt(period))
+        raw    = 2 * QuantEngine.wma(series, half) - QuantEngine.wma(series, period)
+        if raw.isna().all():
+            return pd.Series(np.nan, index=series.index)
+        return QuantEngine.wma(raw, sqrt_p)          # ← EWM(5) non standard supprimé
+
+    @staticmethod
+    def atr(df, period=14):
+        c  = df['close'].shift(1)
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - c).abs(),
+            (df['low']  - c).abs()
+        ], axis=1).max(axis=1)
+        return tr.ewm(alpha=1 / period, adjust=False).mean()
+
+    @staticmethod
+    def adx(df, period=14):
+        """ADX Wilder avec exclusion mutuelle stricte des DM via np.where"""
+        high      = df['high']
+        low       = df['low']
+        prev_high = high.shift(1)
+        prev_low  = low.shift(1)
+
+        up_move   = high - prev_high
+        down_move = prev_low - low
+
+        pdm = pd.Series(
+            np.where((up_move > down_move) & (up_move > 0), up_move, 0.0),
+            index=df.index, dtype=np.float64
+        )
+        mdm = pd.Series(
+            np.where((down_move > up_move) & (down_move > 0), down_move, 0.0),
+            index=df.index, dtype=np.float64
+        )
+
+        atr_v  = QuantEngine.atr(df, period)
+        pdm_s  = pdm.ewm(alpha=1 / period, adjust=False).mean()
+        mdm_s  = mdm.ewm(alpha=1 / period, adjust=False).mean()
+
+        safe_atr = atr_v.replace(0, np.nan)
+        pdi = 100 * pdm_s / safe_atr
+        mdi = 100 * mdm_s / safe_atr
+        dx  = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
+        adx = dx.ewm(alpha=1 / period, adjust=False).mean()
+        return adx, pdi, mdi
+
+    @staticmethod
+    def rsi(series, period=14):
+        """RSI Wilder : gestion loss=0 → RSI=100 ; min_periods correct"""
+        delta    = series.diff()
+        gain     = delta.where(delta > 0, 0.0)
+        loss     = (-delta.where(delta < 0, 0.0))
+
+        avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+
+        rsi_out              = pd.Series(np.nan, index=series.index, dtype=float)
+        mask_zero            = avg_loss == 0
+        rsi_out[mask_zero]   = 100.0
+        mask_nz              = ~mask_zero & avg_loss.notna() & avg_gain.notna()
+        rsi_out[mask_nz]     = 100 - (100 / (1 + avg_gain[mask_nz] / avg_loss[mask_nz]))
+        return rsi_out
+
+    @staticmethod
+    def zlema(series, period=50, lag=17):
+        src = series + (series - series.shift(lag))
+        return src.ewm(span=period, adjust=False).mean()
+
+
+# ----------------------------------------------------------------
+#  ADR — Average Daily Range (forex/metals/crypto)
+# ----------------------------------------------------------------
+def compute_adr(df_d: pd.DataFrame, period: int = 14) -> float:
+    if not is_valid_df(df_d, 2):
+        return float("nan")
+    ranges = (df_d["high"] - df_d["low"]).iloc[-(period + 1):-1]
+    return float(ranges.mean()) if not ranges.empty else float("nan")
+
+
+# ----------------------------------------------------------------
+#  ADR CONSUMED  (V16) — range consommé depuis minuit NY
+# ----------------------------------------------------------------
+def compute_adr_consumed(df_m15: pd.DataFrame,
+                         adr_value: float) -> float | None:
+    """
+    Range intraday consommé depuis minuit NY, en % de l'ADR.
+    Calcul : (high_jour - low_jour) / ADR × 100.
+    paramètre mort midnight_open_price supprimé.
+    """
+    if not is_valid_df(df_m15) or adr_value is None or adr_value <= 0:
+        return None
+    try:
+        ny_tz    = pytz.timezone("America/New_York")
+        idx      = df_m15.index
+        if idx.tz is None:
+            idx = idx.tz_localize("UTC")
+        idx_ny   = idx.tz_convert(ny_tz)
+        today_ny = datetime.now(ny_tz).date()
+
+        mask       = idx_ny.date == today_ny
+        today_bars = df_m15[mask]
+        if today_bars.empty:
+            return None
+
+        today_h  = float(today_bars["high"].max())
+        today_l  = float(today_bars["low"].min())
+        consumed = (today_h - today_l) / adr_value * 100.0
+        return round(min(consumed, 100.0), 1)
+    except Exception as _e:
+        logger.warning("compute_adr_consumed error: %s", _e)
+        return None
+
+
+# ----------------------------------------------------------------
+#  MTF INSTITUTIONAL TREND
+# ----------------------------------------------------------------
+TF_WEIGHTS   = {"M": 4.0, "W": 3.5, "D": 3.0, "4H": 2.5, "1H": 2.0, "15m": 1.5}
+TOTAL_WEIGHT = sum(TF_WEIGHTS.values())
+
+
+def get_tf_trend(df: pd.DataFrame, tf_type: str):
+    if not is_valid_df(df, 50):
+        return 0, 40.0, "NEUT"
+    close = df['close']
+
+    if tf_type in ("M", "W"):
+        # pour Monthly, on fetch 80 bars → SMA sera min(200,80)=SMA80, pas SMA200
+        # Le nommage sma200 est conservé pour cohérence mais représente SMA(min(200, n))
+        min_bars = 52 if tf_type == "M" else 200   # 52 months ≈ 4 ans d'historique minimum
+        if len(df) < min_bars:
+            return 0, 40.0, "NEUT"
+        sma200 = close.rolling(min(200, len(df))).mean().iloc[-1]
+        ema50  = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        if pd.isna(sma200) or pd.isna(ema50):
+            return 0, 40.0, "NEUT"
+        trend    = 1 if ema50 > sma200 else (-1 if ema50 < sma200 else 0)
+        strength = 75.0 if ema50 != sma200 else 40.0
+        label    = "BULL" if trend == 1 else ("BEAR" if trend == -1 else "NEUT")
+        return trend, strength, label
+
+    elif tf_type == "4H":
+        score = 0
+        ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        score += 1 if close.iloc[-1] > ema50 else -1
+        try:
+            adx_s, pdi_s, mdi_s = QuantEngine.adx(df, 14)
+            score += 1 if pdi_s.iloc[-1] > mdi_s.iloc[-1] else -1
+        except Exception as _e:
+            logger.warning("get_tf_trend 4H ADX error: %s", _e)
+
+        # filtrage journalier timezone-aware correct
+        try:
+            df_tz = df.copy()
+            if df_tz.index.tz is None:
+                df_tz.index = df_tz.index.tz_localize("UTC")
+            today  = df_tz.index[-1].date()
+            mask   = pd.Series(
+                [ts.date() for ts in df_tz.index],
+                index=df_tz.index
+            ) == today
+            day_rows = df_tz[mask]
+            if not day_rows.empty:
+                daily_open = day_rows['open'].iloc[0]
+                score += 1 if close.iloc[-1] > daily_open else -1
+        except Exception as _e:
+            logger.warning("get_tf_trend 4H daily_open error: %s", _e)
+
+        trend    = 1 if score > 0 else (-1 if score < 0 else 0)
+        strength = 90.0 if abs(score) == 3 else (70.0 if abs(score) >= 1 else 40.0)
+        label    = "BULL" if trend == 1 else ("BEAR" if trend == -1 else "NEUT")
+        return trend, strength, label
+
+    else:
+        ema50 = close.ewm(span=50, adjust=False).mean()
+        ema21 = close.ewm(span=21, adjust=False).mean()
+        ema9  = close.ewm(span=9,  adjust=False).mean()
+        zl    = QuantEngine.zlema(close, 50, 17)
+        rsi_v = QuantEngine.rsi(close, 14)
+        macd  = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+        sig   = macd.ewm(span=9, adjust=False).mean()
+        c     = close.iloc[-1]
+        bullish = (c > zl.iloc[-1] and ema9.iloc[-1] > ema21.iloc[-1] and
+                   ema21.iloc[-1] > ema50.iloc[-1] and
+                   not pd.isna(rsi_v.iloc[-1]) and rsi_v.iloc[-1] > 50 and
+                   macd.iloc[-1] > sig.iloc[-1])
+        bearish = (c < zl.iloc[-1] and ema9.iloc[-1] < ema21.iloc[-1] and
+                   ema21.iloc[-1] < ema50.iloc[-1] and
+                   not pd.isna(rsi_v.iloc[-1]) and rsi_v.iloc[-1] < 50 and
+                   macd.iloc[-1] < sig.iloc[-1])
+        base_str = min(80.0, abs(c - zl.iloc[-1]) / max(c, 1e-9) * 1000)
+        strength = base_str if (bullish or bearish) else 30.0
+        trend    = 1 if bullish else (-1 if bearish else 0)
+        label    = "BULL" if trend == 1 else ("BEAR" if trend == -1 else "NEUT")
+        return trend, strength, label
+
+
+def compute_mtf_analysis(dfs: dict):
+    """
+    Retourne (alignment_pct, dominant, results) sur les tendances BRUTES de chaque TF.
+    NB V16.1 : la version précédente calculait un "macro_trend" (M/W/D/4H) pour écraser
+    les tendances 1H/15m avant de les renvoyer dans `results`. alignment_pct/dominant
+    étaient déjà calculés sur les tendances brutes AVANT cette mutation, et aucun
+    consommateur ne lisait `results` muté ("MTF Details" n'est affiché nulle part dans le
+    rendu actuel) : ce filtre macro n'avait donc aucun effet sur aucune sortie du
+    programme. Code mort supprimé plutôt que branché, pour ne pas changer le comportement
+    de scoring existant sans validation ; `results` reflète maintenant fidèlement ce qui
+    est réellement utilisé par alignment_pct/dominant.
+    """
+    results = {}
+    for tf, df in dfs.items():
+        t, s, lbl   = get_tf_trend(df, tf)
+        results[tf] = {"trend": t, "strength": s, "label": lbl}
+
+    raw_bull      = sum(TF_WEIGHTS[tf] for tf in TF_WEIGHTS
+                        if results.get(tf, {}).get("trend", 0) == 1)
+    raw_bear      = sum(TF_WEIGHTS[tf] for tf in TF_WEIGHTS
+                        if results.get(tf, {}).get("trend", 0) == -1)
+    alignment_pct = round(max(raw_bull, raw_bear) / TOTAL_WEIGHT * 100)
+    dominant      = ("Bullish" if raw_bull > raw_bear
+                     else "Bearish" if raw_bear > raw_bull else "Neutral")
+
+    return alignment_pct, dominant, results
+
+
+# ----------------------------------------------------------------
+#  DAILY BIAS  (5 facteurs)
+# ----------------------------------------------------------------
+def get_daily_bias_v2(df_d: pd.DataFrame, current_price: float = None):
+    if not is_valid_df(df_d, 60):
+        return "NEUTRAL", {}
+
+    close = df_d['close']
+    high  = df_d['high']
+    low   = df_d['low']
+
+    cur = current_price if current_price is not None else float(close.iloc[-1])
+
+    votes_bull = 0
+    votes_bear = 0
+    detail     = {}
+
+    # comparaison float avec tolérance ε
+    def _swing_pts(series, wing=5):
+        highs, lows = [], []
+        arr = series.to_numpy(dtype=np.float64)
+        n   = len(arr)
+        for i in range(wing, n - wing):
+            window = arr[i - wing: i + wing + 1]
+            if abs(arr[i] - window.max()) < 1e-9: highs.append(i)
+            if abs(arr[i] - window.min()) < 1e-9: lows.append(i)
+        return highs, lows
+
+    sh_idx, _  = _swing_pts(high)
+    _, sl_idx  = _swing_pts(low)
+
+    struct_vote = "NEUTRAL"
+    if len(sh_idx) >= 2 and len(sl_idx) >= 2:
+        hh = high.iloc[sh_idx[-1]] > high.iloc[sh_idx[-2]]
+        hl = low.iloc[sl_idx[-1]]  > low.iloc[sl_idx[-2]]
+        lh = high.iloc[sh_idx[-1]] < high.iloc[sh_idx[-2]]
+        ll = low.iloc[sl_idx[-1]]  < low.iloc[sl_idx[-2]]
+        if hh and hl:
+            struct_vote = "BULLISH"; votes_bull += 2
+        elif lh and ll:
+            struct_vote = "BEARISH"; votes_bear += 2
+    detail["Structure"] = struct_vote
+
+    ema50_series = close.ewm(span=50, adjust=False).mean()
+    ema21 = close.ewm(span=21, adjust=False).mean().iloc[-1]
+    ema50 = ema50_series.iloc[-1]
+    if   cur > ema21 > ema50: detail["EMA 21/50"] = "BULLISH"; votes_bull += 1
+    elif cur < ema21 < ema50: detail["EMA 21/50"] = "BEARISH"; votes_bear += 1
+    else:                     detail["EMA 21/50"] = "NEUTRAL"
+
+    # Weekly Open = premier open du lundi de la semaine courante
+    wo_vote = "NEUTRAL"
+    try:
+        df_copy = df_d.copy()
+        if df_copy.index.tz is None:
+            df_copy.index = df_copy.index.tz_localize("UTC")
+        # Les bougies D OANDA s'alignent à 17:00 NY : la session du lundi démarre donc le
+        # DIMANCHE 17:00 NY. On décale l'heure NY (heure murale) de +7h pour que cette
+        # bougie tombe sur lundi 00:00 → "lundi" = première session de la semaine.
+        # On ne retient que la bougie de lundi de la semaine COURANTE : avant la clôture
+        # de cette bougie (lundi 17:00 NY) elle est absente (bougies incomplètes filtrées)
+        # et le vote Weekly Open est alors omis, plutôt que de lire la semaine précédente.
+        ny_tz_wo    = pytz.timezone("America/New_York")
+        shifted_idx = (df_copy.index.tz_convert(ny_tz_wo).tz_localize(None)
+                       + pd.Timedelta(hours=7))
+        now_shifted = datetime.now(ny_tz_wo).replace(tzinfo=None) + pd.Timedelta(hours=7)
+        monday_date = (now_shifted - pd.Timedelta(days=now_shifted.weekday())).date()
+        current_week_mondays = df_copy[
+            np.array([t.date() for t in shifted_idx]) == monday_date
+        ]
+        if not current_week_mondays.empty:
+            weekly_open = float(current_week_mondays['open'].iloc[0])
+            wo_vote = "BULLISH" if cur > weekly_open else "BEARISH"
+            if wo_vote == "BULLISH": votes_bull += 1
+            else:                    votes_bear += 1
+        detail["Weekly Open"] = wo_vote
+    except Exception as _e:
+        logger.warning("get_daily_bias_v2 Weekly Open error: %s", _e)
+        detail["Weekly Open"] = "NEUTRAL"
+
+    # df_d ne contient que des bougies COMPLETES (fetch_oanda_data filtre sur "complete"),
+    # donc df_d.iloc[-1] est déjà la veille — même convention que pdh/pdl (iloc[-1] plus bas).
+    # Corrigé : utilisait iloc[-2] (avant-veille), incohérent avec PDH/PDL sur le même df_d.
+    if is_valid_df(df_d, 1):
+        midpoint = (float(high.iloc[-1]) + float(low.iloc[-1])) / 2
+        if float(close.iloc[-1]) > midpoint:
+            detail["Close J-1"] = "BULLISH"; votes_bull += 1
+        else:
+            detail["Close J-1"] = "BEARISH"; votes_bear += 1
+    else:
+        detail["Close J-1"] = "NEUTRAL"
+
+    # slope_norm encapsulé correctement
+    slope_vote = "NEUTRAL"
+    slope_norm = 0.0
+    try:
+        if len(ema50_series) >= 6:
+            atr_d_val = float(
+                pd.concat([
+                    high - low,
+                    (high - close.shift()).abs(),
+                    (low  - close.shift()).abs(),
+                ], axis=1).max(axis=1).ewm(alpha=1/14, adjust=False).mean().iloc[-1]
+            )
+            slope_5d = float(ema50_series.iloc[-1] - ema50_series.iloc[-6])
+            if atr_d_val > 0:
+                slope_norm = slope_5d / atr_d_val
+                if   slope_norm >  0.05: slope_vote = "BULLISH"; votes_bull += 1
+                elif slope_norm < -0.05: slope_vote = "BEARISH"; votes_bear += 1
+        detail["EMA50 Slope"] = f"{slope_vote} ({slope_norm:+.3f})"
+    except Exception as _e:
+        logger.warning("get_daily_bias_v2 EMA50 Slope error: %s", _e)
+        detail["EMA50 Slope"] = "NEUTRAL"
+
+    detail["Votes"] = f"{votes_bull}B / {votes_bear}S"
+
+    # Comparaison relative explicite (corrige l'ancien enchaînement if/elif qui testait
+    # votes_bull>=3 en premier : une égalité 3-3, voire un cas bull=3/bear=4, résolvait
+    # systématiquement en BULLISH indépendamment du camp réellement majoritaire).
+    if votes_bull > votes_bear:
+        bias = "STRONG BULLISH" if votes_bull >= 5 else ("BULLISH" if votes_bull >= 3 else "NEUTRAL")
+    elif votes_bear > votes_bull:
+        bias = "STRONG BEARISH" if votes_bear >= 5 else ("BEARISH" if votes_bear >= 3 else "NEUTRAL")
+    else:
+        bias = "NEUTRAL"
+
+    return bias, detail
+
+
+# ----------------------------------------------------------------
+#  FVG M15
+# ----------------------------------------------------------------
+def detect_fvg(df, price, lookback=80):
+    sub = df.iloc[-(lookback + 3):].reset_index(drop=True)
+    n   = len(sub)
+    if n < 3:
+        return False, False, None, None
+
+    denom     = sub["low"].replace(0, 1e-9)
+    range_pct = (sub["high"] - sub["low"]) / denom
+    auto_thr  = float(range_pct.expanding().mean().iloc[-1]) * 2.0
+
+    active_bulls = []
+    active_bears = []
+
+    for i in range(2, n):
+        h0 = float(sub["high"].iloc[i]);   l0 = float(sub["low"].iloc[i])
+        c0 = float(sub["close"].iloc[i]);  c1 = float(sub["close"].iloc[i - 1])
+        h2 = float(sub["high"].iloc[i - 2]); l2 = float(sub["low"].iloc[i - 2])
+
+        # Invalidation : bull FVG invalidé si close sous le bas du gap
+        active_bulls = [(b, t) for b, t in active_bulls if c0 >= b]
+        # Invalidation : bear FVG invalidé si close au-dessus du haut du gap
+        active_bears = [(b, t) for b, t in active_bears if c0 <= t]
+
+        if l0 > h2 and c1 > h2:
+            size_pct = (l0 - h2) / max(h2, 1e-9)
+            if size_pct >= auto_thr:
+                active_bulls.insert(0, (h2, l0))
+        elif h0 < l2 and c1 < l2:
+            size_pct = (l2 - h0) / max(h0, 1e-9)
+            if size_pct >= auto_thr:
+                active_bears.insert(0, (h0, l2))
+
+    in_bull = any(b <= price <= t for b, t in active_bulls)
+    in_bear = any(b <= price <= t for b, t in active_bears)
+
+    def _nearest(lst):
+        if not lst:
+            return None
+        return min(lst, key=lambda r: abs(price - (r[0] + r[1]) / 2))
+
+    return (in_bull, in_bear, _nearest(active_bulls), _nearest(active_bears))
+
+
+# ----------------------------------------------------------------
+#  CURRENCY STRENGTH
+# ----------------------------------------------------------------
+CURRENCIES = ["USD", "EUR", "GBP", "JPY", "AUD", "CAD", "NZD", "CHF"]
+
+STRENGTH_PAIRS = [
+    "EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF",
+    "AUD_USD", "USD_CAD", "NZD_USD",
+    "EUR_GBP", "EUR_JPY", "EUR_CHF",
+    "GBP_JPY", "AUD_JPY", "CAD_JPY", "NZD_JPY",
+    # Ajoutés V16.1 : AUD/CAD/NZD/CHF n'étaient représentés que dans 2 paires chacun
+    # (contre 7 pour USD, 6 pour JPY), ce qui les faisait structurellement toucher les
+    # bornes 0/10 du min-max en premier. Ces 6 croisements sont déjà scannés dans `assets`.
+    "AUD_CAD", "AUD_CHF", "AUD_NZD", "CAD_CHF", "NZD_CAD", "NZD_CHF",
+]
+
+def compute_currency_strength(dfs_h1: dict) -> dict:
+    raw    = {c: 0.0 for c in CURRENCIES}
+    counts = {c: 0   for c in CURRENCIES}
+
+    for pair, df in dfs_h1.items():
+        if not is_valid_df(df, 60):
+            continue
+        parts = pair.split("_")
+        if len(parts) != 2:
+            continue
+        base, quote = parts[0], parts[1]
+        if base not in CURRENCIES or quote not in CURRENCIES:
+            continue
+
+        close  = df["close"]
+        ema9   = close.ewm(span=9,  adjust=False).mean().iloc[-1]
+        ema21  = close.ewm(span=21, adjust=False).mean().iloc[-1]
+        ema50  = close.ewm(span=50, adjust=False).mean().iloc[-1]
+        rsi_v  = QuantEngine.rsi(close, 14).iloc[-1]
+
+        rsi_ok   = not pd.isna(rsi_v)
+        bullish  = ema9 > ema21 > ema50 and rsi_ok and rsi_v > 50
+        bearish  = ema9 < ema21 < ema50 and rsi_ok and rsi_v < 50
+        contrib  = 1.0 if bullish else (-1.0 if bearish else 0.0)
+
+        raw[base]  += contrib;  raw[quote]  -= contrib
+        counts[base] += 1;      counts[quote] += 1
+
+    scores = {}
+    for c in CURRENCIES:
+        scores[c] = raw[c] / counts[c] if counts[c] > 0 else 0.0
+
+    vals = list(scores.values())
+    s_min, s_max = min(vals), max(vals)
+    spread = s_max - s_min
+    if spread < 1e-8:
+        return {c: 5.0 for c in CURRENCIES}
+    return {c: round((v - s_min) / spread * 10, 2) for c, v in scores.items()}
+
+
+def get_strength_delta(ticker: str, strength_scores: dict) -> float | None:
+    parts = ticker.split("_")
+    if len(parts) != 2:
+        return None
+    base, quote = parts[0], parts[1]
+    sb = strength_scores.get(base)
+    sq = strength_scores.get(quote)
+    if sb is None or sq is None:
+        return None
+    return round(sb - sq, 2)
+
+
+# ----------------------------------------------------------------
+#  MOMENTUM SCORE
+# ----------------------------------------------------------------
+def compute_momentum_score(df_h4, df_h1, df_m15, signal_is_bull: bool) -> int:
+    score = 0
+    for df_src in (df_h4, df_h1, df_m15):
+        if not is_valid_df(df_src, 20):
+            continue
+        try:
+            adx_s, pdi_s, mdi_s = QuantEngine.adx(df_src, 14)
+            adx_v = float(adx_s.iloc[-1])
+            di_ok = (pdi_s.iloc[-1] > mdi_s.iloc[-1]) if signal_is_bull \
+                    else (mdi_s.iloc[-1] > pdi_s.iloc[-1])
+            if adx_v >= 25 and di_ok:
+                score += 1
+        except Exception as _e:
+            logger.warning("compute_momentum_score error: %s", _e)
+    return score
+
+
+# ----------------------------------------------------------------
+#  SYSTÈME DE NOTATION  V16
+#  near_pdl / near_pdh non utilisés — supprimés de compute_score
+# ----------------------------------------------------------------
+def compute_score(flip_type, mins_ago,
+                  mtf_pct, mtf_dominant,
+                  zone_discount, zone_premium,
+                  below_mid, above_mid,
+                  in_bull_fvg, in_bear_fvg, fvg_near_bull, fvg_near_bear,
+                  adx_val, pdi_val, mdi_val, atr_val, atr_mean,
+                  midnight_bonus: bool = False,
+                  adr_consumed: float | None = None,
+                  bias_alignment: str = "ALIGNED"):
+
+    score        = 0
+    score_detail = {}
+
+    # mins_ago = temps réel écoulé depuis la clôture de la bougie de flip (calculé par
+    # l'appelant à partir de son horodatage réel, cf. find_last_hma_flip / analyze_asset).
+    # Corrigé V16.1 : remplace l'ancien candles_ago*15, qui supposait à tort que la
+    # dernière bougie M15 = l'instant présent (sous-estimation systématique de 0-15 min)
+    # et perdait tout sens à travers un gap de session (week-end).
+    if flip_type is not None and mins_ago is not None:
+        mins = mins_ago
+        if   mins <= 15: pts = 30
+        elif mins <= 30: pts = 20
+        elif mins <= 45: pts = 10
+        else:            pts = 0
+    else:
+        pts = 0
+    score += pts
+    score_detail["Trigger"] = pts
+
+    signal_is_bull = (flip_type == "BULL")
+    signal_is_bear = (flip_type == "BEAR")
+
+    mtf_aligned = ((signal_is_bull and mtf_dominant == "Bullish") or
+                   (signal_is_bear and mtf_dominant == "Bearish"))
+    if mtf_aligned:
+        if   mtf_pct >= 80: pts = 25
+        elif mtf_pct >= 65: pts = 18
+        elif mtf_pct >= 50: pts = 10
+        else:               pts = 5
+    else:
+        pts = 0
+    score += pts
+    score_detail["MTF"] = pts
+
+    if signal_is_bull:
+        pts = 15 if zone_discount else (8 if below_mid else 0)
+    elif signal_is_bear:
+        pts = 15 if zone_premium  else (8 if above_mid else 0)
+    else:
+        pts = 0
+    score += pts
+    score_detail["Zone"] = pts
+
+    if midnight_bonus:
+        score += 3
+        score_detail["Midnight"] = 3
+    else:
+        score_detail["Midnight"] = 0
+
+    if signal_is_bull:
+        pts = 15 if in_bull_fvg else (7 if fvg_near_bull else 0)
+    elif signal_is_bear:
+        pts = 15 if in_bear_fvg else (7 if fvg_near_bear else 0)
+    else:
+        pts = 0
+    score += pts
+    score_detail["FVG"] = pts
+
+    adx_dir_ok = ((signal_is_bull and pdi_val > mdi_val) or
+                  (signal_is_bear and mdi_val > pdi_val))
+    if   adx_val > 25 and adx_dir_ok: pts = 10
+    elif adx_val > 20 and adx_dir_ok: pts = 6
+    elif adx_val > 20:                pts = 3
+    else:                             pts = 0
+    score += pts
+    score_detail["ADX"] = pts
+
+    if   atr_val >= atr_mean:       pts = 5
+    elif atr_val >= atr_mean * 0.5: pts = 3
+    else:                           pts = 0
+    score += pts
+    score_detail["ATR"] = pts
+
+    # Malus range épuisé (V16)
+    if adr_consumed is not None and adr_consumed > 70:
+        score -= 5
+        score_detail["ADR Malus"] = -5
+    else:
+        score_detail["ADR Malus"] = 0
+
+    # Malus biais journalier (V16.1) — bias_alignment était calculé et affiché (tag
+    # "⚠ COUNTER") mais n'entrait dans aucun composant du score : un signal frontalement
+    # contradictoire avec le biais 5 facteurs (qui sert pourtant de filtre de rejet dur
+    # pour NEUTRAL) pouvait porter le grade le plus élevé de la grille. -20 empêche un
+    # signal COUNTER d'atteindre A+ (score max 103-20=83 < seuil 85) sans le rejeter.
+    if bias_alignment == "COUNTER":
+        score -= 20
+        score_detail["Bias Malus"] = -20
+    else:
+        score_detail["Bias Malus"] = 0
+
+    if   score >= 85: grade = "A+"
+    elif score >= 70: grade = "A"
+    elif score >= 55: grade = "B+"
+    elif score >= 40: grade = "B"
+    else:             grade = "C"
+
+    return score, grade, score_detail
+
+
+# ----------------------------------------------------------------
+#  FLIP HMA
+# ----------------------------------------------------------------
+def find_last_hma_flip(hma_series, max_lookback=20):
+    """
+    candles_ago garanti ≥ 0. Retourne aussi idx_curr, la position entière du flip dans
+    hma_series, pour que l'appelant puisse retrouver l'horodatage réel de la bougie
+    (hma_series.index[idx_curr]) et calculer une fraîcheur en temps réel écoulé plutôt
+    qu'en candles_ago*15 (cf. analyze_asset / compute_score).
+    HMA plate (v_curr == v_prev) ignorée pour éviter les faux flips.
+    """
+    colors = []
+    n      = len(hma_series)
+    for i in range(n - 1, max(n - max_lookback - 2, 1), -1):
+        v_curr = hma_series.iloc[i]
+        v_prev = hma_series.iloc[i - 1]
+        if pd.isna(v_curr) or pd.isna(v_prev):
+            continue
+        # HMA plate → on ignore cette bougie (ni GREEN ni RED)
+        if v_curr == v_prev:
+            continue
+        colors.append((i, "GREEN" if v_curr > v_prev else "RED"))
+
+    for j in range(len(colors) - 1):
+        idx_curr, col_curr = colors[j]
+        _,        col_prev = colors[j + 1]
+        if col_curr != col_prev:
+            candles_ago = max(0, (n - 1) - idx_curr)
+            return ("BULL" if col_curr == "GREEN" else "BEAR"), candles_ago, idx_curr
+    return None, None, None
+
+
+# ----------------------------------------------------------------
+#  FETCH OANDA
+# ----------------------------------------------------------------
+MAX_RETRIES = 3
+RETRY_DELAY = 1.5
+
+def fetch_oanda_data(access_token: str, environment: str,
+                     instrument: str, granularity: str, count: int):
+    """Crée un client OANDA dédié pour chaque appel — thread-safe"""
+    client = oandapyV20.API(access_token=access_token, environment=environment)
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            r = instruments.InstrumentsCandles(
+                instrument=instrument,
+                params={"count": count, "granularity": granularity}
+            )
+            client.request(r)
+            if not isinstance(r.response, dict) or "candles" not in r.response:
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_DELAY * attempt)
+                    continue
+                return pd.DataFrame(), "Réponse inattendue"
+            rows = [
+                {"time":  pd.to_datetime(c["time"]),
+                 "open":  float(c["mid"]["o"]),
+                 "high":  float(c["mid"]["h"]),
+                 "low":   float(c["mid"]["l"]),
+                 "close": float(c["mid"]["c"])}
+                for c in r.response["candles"] if c.get("complete")
+            ]
+            if not rows:
+                return pd.DataFrame(), "Aucune bougie complète"
+            df = pd.DataFrame(rows).set_index("time")
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("UTC")
+            return df, None
+        except Exception as e:
+            err_str = str(e)
+            if "401" in err_str or "Unauthorized" in err_str:
+                return pd.DataFrame(), "TOKEN_INVALID"
+            # Instrument inconnu / indisponible sur ce compte : inutile de retenter
+            # 3 fois avec backoff, on abandonne tout de suite.
+            elif getattr(e, "code", None) == 400 or ("nstrument" in err_str and "nvalid" in err_str):
+                return pd.DataFrame(), f"INSTRUMENT_UNAVAILABLE: {err_str[:80]}"
+            elif "429" in err_str:
+                time.sleep(RETRY_DELAY * attempt * 3)
+                continue
+            elif "500" in err_str or "503" in err_str:
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_DELAY * attempt)
+                    continue
+            if attempt == MAX_RETRIES:
+                return pd.DataFrame(), str(e)
+    return pd.DataFrame(), "MAX_RETRIES"
+
+
+# ----------------------------------------------------------------
+#  FETCH STRENGTH — thread-safe via access_token
+# ----------------------------------------------------------------
+def fetch_strength_data(access_token: str, environment: str) -> dict:
+    dfs = {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = {
+            ex.submit(fetch_oanda_data, access_token, environment, pair, "H1", 100): pair
+            for pair in STRENGTH_PAIRS
+        }
+        for fut in as_completed(futures):
+            pair = futures[fut]
+            try:
+                df, err = fut.result()
+                if not df.empty:
+                    dfs[pair] = df
+            except Exception as _e:
+                logger.warning("fetch_strength_data %s: %s", pair, _e)
+    return dfs
+
+
+# ----------------------------------------------------------------
+#  ANALYSE PRINCIPALE — thread-safe
+# ----------------------------------------------------------------
+def analyze_asset(access_token: str, environment: str,
+                  ticker: str, freshness_limit_min: int = 30,
+                  strength_scores: dict = None,
+                  debug_log: list = None, _lock: threading.Lock = None):
+
+    def _reject(reason):
+        if debug_log is not None:
+            if _lock:
+                with _lock:
+                    debug_log.append((ticker, reason))
+            else:
+                debug_log.append((ticker, reason))
+        return None
+
+    try:
+        fetch_specs = [
+            ("M15", 400), ("H1", 200), ("D", 300),
+            ("H4", 300),  ("W", 250),  ("M", 80),
+        ]
+        fetch_results = {}
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futures = {
+                ex.submit(fetch_oanda_data,
+                          access_token, environment, ticker, gran, cnt): gran
+                for gran, cnt in fetch_specs
+            }
+            for fut in as_completed(futures):
+                gran = futures[fut]
+                try:
+                    fetch_results[gran] = fut.result()
+                except Exception as _e:
+                    logger.error("[%s] fetch %s exception: %s", ticker, gran, _e)
+                    fetch_results[gran] = (pd.DataFrame(), str(_e))
+
+        df_m15, err_m15 = fetch_results.get("M15", (pd.DataFrame(), "missing"))
+        df_h1,  _       = fetch_results.get("H1",  (pd.DataFrame(), None))
+        df_d,   err_d   = fetch_results.get("D",   (pd.DataFrame(), "missing"))
+        df_4h,  _       = fetch_results.get("H4",  (pd.DataFrame(), None))
+        df_w,   _       = fetch_results.get("W",   (pd.DataFrame(), None))
+        df_mo,  _       = fetch_results.get("M",   (pd.DataFrame(), None))
+
+        if not is_valid_df(df_m15): return _reject(f"FETCH_M15: {err_m15}")
+        if not is_valid_df(df_d):   return _reject(f"FETCH_D: {err_d}")
+
+        # Staleness check — seuil 45 min (hors killzones, paires peu liquides)
+        STALENESS_LIMIT_MIN = 45
+        try:
+            last_candle_time = df_m15.index[-1]
+            if last_candle_time.tz is None:
+                last_candle_time = last_candle_time.tz_localize("UTC")
+            now_utc           = datetime.now(pytz.UTC)
+            staleness_minutes = (now_utc - last_candle_time).total_seconds() / 60
+            if staleness_minutes > STALENESS_LIMIT_MIN:
+                return _reject(f"STALE_DATA: {staleness_minutes:.0f}min")
+        except Exception as _e:
+            logger.warning("[%s] staleness check error: %s", ticker, _e)
+
+        price = float(df_m15['close'].iloc[-1])
+
+        bias, _ = get_daily_bias_v2(df_d, current_price=price)
+        bias_bull = bias in ("BULLISH", "STRONG BULLISH")
+        bias_bear = bias in ("BEARISH", "STRONG BEARISH")
+
+        dfs_mtf = {
+            "M":   df_mo  if is_valid_df(df_mo)  else None,
+            "W":   df_w   if is_valid_df(df_w)   else None,
+            "D":   df_d   if is_valid_df(df_d)   else None,
+            "4H":  df_4h  if is_valid_df(df_4h)  else None,
+            "1H":  df_h1  if is_valid_df(df_h1)  else None,
+            "15m": df_m15 if is_valid_df(df_m15) else None,
+        }
+        mtf_pct, mtf_dominant, _ = compute_mtf_analysis(dfs_mtf)
+
+        hma = QuantEngine.hma(df_m15['close'], 20)
+        if hma.isna().iloc[-5:].any():
+            return _reject("HMA_NAN")
+
+        flip_type, candles_ago, flip_idx = find_last_hma_flip(hma, max_lookback=20)
+        if flip_type is None:
+            return _reject("NO_HMA_FLIP")
+
+        if bias == "NEUTRAL":
+            return _reject("BIAS_NEUTRAL")
+
+        if (flip_type == "BULL" and bias_bull) or (flip_type == "BEAR" and bias_bear):
+            bias_alignment = "ALIGNED"
+        else:
+            bias_alignment = "COUNTER"
+
+        # Fraîcheur en temps réel écoulé (corrigé V16.1). L'ancien candles_ago*15
+        # supposait que la dernière bougie M15 = l'instant présent (sous-estimation
+        # systématique de 0-15 min) et perdait tout sens à travers un gap de session
+        # (ex. ouverture dominicale : affichait ~45 min pour un flip vieux de 48h).
+        # "time" OANDA = début de bougie → on ajoute 15 min pour obtenir la clôture réelle.
+        try:
+            flip_open_time = hma.index[flip_idx]
+            if flip_open_time.tz is None:
+                flip_open_time = flip_open_time.tz_localize("UTC")
+            flip_close_time = flip_open_time + pd.Timedelta(minutes=15)
+            mins_ago = max(0, int((datetime.now(pytz.UTC) - flip_close_time).total_seconds() // 60))
+        except Exception as _e:
+            logger.warning("[%s] real freshness calc error: %s", ticker, _e)
+            mins_ago = candles_ago * 15  # fallback si l'horodatage est indisponible
+
+        freshness_str = f"⚡ {mins_ago} min" if mins_ago <= freshness_limit_min else f"⏳ {mins_ago} min"
+        signal_fresh  = mins_ago <= freshness_limit_min
+
+        hma_now = hma.iloc[-1]
+        if flip_type == "BULL" and price <= hma_now:
+            return _reject("PRICE_BELOW_HMA_ON_BULL")
+        if flip_type == "BEAR" and price >= hma_now:
+            return _reject("PRICE_ABOVE_HMA_ON_BEAR")
+
+        atr_m15  = QuantEngine.atr(df_m15, 14)
+        atr_val  = float(atr_m15.iloc[-1])
+        atr_mean = float(atr_m15.iloc[-50:].mean())
+
+        in_bull_fvg, in_bear_fvg, nb_fvg, nr_fvg = detect_fvg(df_m15, price, lookback=80)
+        fvg_near_bull = (nb_fvg is not None and
+                         abs(price - (nb_fvg[0] + nb_fvg[1]) / 2) < atr_val * 1.0)
+        fvg_near_bear = (nr_fvg is not None and
+                         abs(price - (nr_fvg[0] + nr_fvg[1]) / 2) < atr_val * 1.0)
+
+        # ── MIDNIGHT OPEN — avec validation heure exacte ──
+        midnight_open             = None
+        midnight_open_approximate = False
+        try:
+            ny_tz     = pytz.timezone("America/New_York")
+            _m15_raw  = pd.to_datetime(df_m15.index)
+            if _m15_raw.tz is None:
+                m15_times = _m15_raw.tz_localize("UTC").tz_convert(ny_tz)
+            else:
+                m15_times = _m15_raw.tz_convert(ny_tz)
+            today_ny = datetime.now(ny_tz).date()
+            mn_mask  = (
+                (np.array([t.date() for t in m15_times]) == today_ny) &
+                (np.array([t.hour   for t in m15_times]) == 0) &
+                (np.array([t.minute for t in m15_times]) == 0)
+            )
+            mn_c = df_m15[mn_mask]
+            if mn_c.empty:
+                # Fallback : première bougie du jour — approximatif
+                today_mask = np.array([t.date() for t in m15_times]) == today_ny
+                today_c    = df_m15[today_mask]
+                if not today_c.empty:
+                    first_time = m15_times[today_mask][0]
+                    # signaler l'approximation si heure != 00:00
+                    if first_time.hour != 0 or first_time.minute != 0:
+                        midnight_open_approximate = True
+                    midnight_open = float(today_c["open"].iloc[0])
+            else:
+                midnight_open = float(mn_c["open"].iloc[0])
+        except Exception as _e:
+            logger.warning("[%s] midnight_open error: %s", ticker, _e)
+
+
+        pdh = float(df_d["high"].iloc[-1])
+        pdl = float(df_d["low"].iloc[-1])
+
+        if midnight_open is not None and not midnight_open_approximate:
+            in_premium       = (price > midnight_open) and (price <= pdh)
+            in_discount      = (price < midnight_open) and (price >= pdl)
+            in_extended_high = price > pdh
+            in_extended_low  = price < pdl
+
+            if in_extended_high:
+                zone_label = "EXT HIGH"
+            elif in_extended_low:
+                zone_label = "EXT LOW"
+            elif in_premium:
+                zone_label = "PREMIUM"
+            elif in_discount:
+                zone_label = "DISCOUNT"
+            else:
+                zone_label = "EQUILIBRE"
+
+            # Zone de scoring dérivée du MÊME label que celui affiché, mutuellement
+            # exclusive (corrigé V16.1). Avant ce correctif :
+            # (a) in_premium/in_discount pouvaient rester vrais simultanément avec
+            #     in_extended_low/high quand midnight_open sort du range [pdl, pdh]
+            #     (ex. gap) → score et label affiché se contredisaient (cf. audit) ;
+            # (b) en configuration normale, price < pdl (EXT LOW) viole systématiquement
+            #     price >= pdl exigé par in_discount → une zone EXT LOW/HIGH, pourtant la
+            #     plus extrême, ne recevait 0 pt de la composante Zone au lieu d'être
+            #     traitée comme l'extension logique du discount/premium (cohérent ICT :
+            #     au-delà du PDH = premium extrême, au-delà du PDL = discount extrême).
+            zone_premium  = zone_label in ("EXT HIGH", "PREMIUM")
+            zone_discount = zone_label in ("EXT LOW",  "DISCOUNT")
+            above_mid     = zone_premium
+            below_mid     = zone_discount
+        else:
+            d1_mid        = (pdh + pdl) / 2.0
+            in_discount   = price < d1_mid
+            in_premium    = price > d1_mid
+            zone_discount = in_discount
+            zone_premium  = in_premium
+            below_mid     = in_discount
+            above_mid     = in_premium
+            zone_label    = ("DISCOUNT" if in_discount else
+                             "PREMIUM"  if in_premium  else "EQUILIBRE")
+
+        midnight_bonus = False
+        if midnight_open is not None and not midnight_open_approximate:
+            if flip_type == "BULL" and price < midnight_open:
+                midnight_bonus = True
+            elif flip_type == "BEAR" and price > midnight_open:
+                midnight_bonus = True
+
+        # protection explicite du calcul ADX score
+        try:
+            df_adx_src            = df_h1 if is_valid_df(df_h1, 20) else df_m15
+            adx_s, pdi_s, mdi_s  = QuantEngine.adx(df_adx_src, 14)
+            adx_val_score = round(float(adx_s.iloc[-1]), 1)
+            pdi_val       = round(float(pdi_s.iloc[-1]), 1)
+            mdi_val       = round(float(mdi_s.iloc[-1]), 1)
+        except Exception as _e:
+            logger.warning("[%s] ADX score computation failed: %s", ticker, _e)
+            adx_val_score, pdi_val, mdi_val = 0.0, 0.0, 0.0
+
+        # ADR (forex/metals/crypto) ou ATR (indices)
+        if ticker in INDICES:
+            _atr_d_raw   = QuantEngine.atr(df_d, 14).iloc[-1]
+            adr_display  = round(float(_atr_d_raw), 2) if not pd.isna(_atr_d_raw) else None
+            adr_label    = "ATR"
+            adr_consumed = None
+        else:
+            _adr_raw    = compute_adr(df_d, period=14)
+            adr_display = round(float(_adr_raw), 5) if not np.isnan(_adr_raw) else None
+            adr_label   = "ADR"
+            # Valeur brute (non arrondie) passée au calcul métier — corrigé V16.1, la
+            # version précédente réinjectait adr_display (arrondi pour l'affichage).
+            adr_consumed = compute_adr_consumed(df_m15, float(_adr_raw) if not np.isnan(_adr_raw) else None)
+            if adr_consumed is not None and np.isnan(adr_consumed):
+                adr_consumed = None
+
+        score, grade, score_detail = compute_score(
+            flip_type, mins_ago, mtf_pct, mtf_dominant,
+            zone_discount, zone_premium,
+            below_mid, above_mid,
+            in_bull_fvg, in_bear_fvg, fvg_near_bull, fvg_near_bear,
+            adx_val_score, pdi_val, mdi_val, atr_val, atr_mean,
+            midnight_bonus=midnight_bonus,
+            adr_consumed=adr_consumed,
+            bias_alignment=bias_alignment,
+        )
+
+        strength_delta = None
+        if strength_scores:
+            strength_delta = get_strength_delta(ticker, strength_scores)
+
+        signal_is_bull = (flip_type == "BULL")   # calculé une seule fois
+        _df_h4  = df_4h if is_valid_df(df_4h) else None
+        _df_h1  = df_h1 if is_valid_df(df_h1) else None
+        momentum = compute_momentum_score(_df_h4, _df_h1, df_m15, signal_is_bull)
+
+        sig = (("▲ LONG"  if flip_type == "BULL" else "▼ SHORT")
+               if signal_fresh else
+               ("LONG (expiré)" if flip_type == "BULL" else "SHORT (expiré)"))
+
+        return {
+            "Fraîcheur":      freshness_str,
+            "Actif + Note":   ticker,
+            "Signal":         sig,
+            "Biais Daily":    bias,
+            "Alignement":     bias_alignment,
+            "Zone":           zone_label,
+            "Score /100":     score,
+            "Grade":          grade,
+            "ADR":            adr_display,
+            "ADR Label":      adr_label,
+            "ADR Consumed":   adr_consumed,
+            "MTF Pct":        mtf_pct,
+            "Strength Δ":     strength_delta,
+            "Momentum":       momentum,
+            "signal_is_bull": signal_is_bull,
+            "Midnight Bonus": midnight_bonus,
+        }
+
+    except Exception as e:
+        logger.error("[%s] analyze_asset EXCEPTION: %s", ticker, e, exc_info=True)
+        if debug_log is not None:
+            if _lock:
+                with _lock:
+                    debug_log.append((ticker, f"EXCEPTION: {e}"))
+            else:
+                debug_log.append((ticker, f"EXCEPTION: {e}"))
+        return None
+
+
+# ----------------------------------------------------------------
+#  RENDU HTML — utilitaire anti bloc-de-code
+# ----------------------------------------------------------------
+def _html(s: str) -> str:
+    """
+    st.markdown() passe le texte par un parseur Markdown AVANT d'appliquer
+    unsafe_allow_html : toute ligne indentée de 4+ espaces (ou dont l'indentation
+    dépasse significativement celle de ses voisines, ex. une valeur d'attribut qui
+    retourne à la ligne en s'alignant sur le guillemet ouvrant) est interprétée comme
+    un bloc de code préformaté et s'affiche en texte brut au lieu d'être rendue comme
+    HTML. Comme le HTML de ce fichier est écrit avec l'indentation Python normale (pour
+    rester lisible dans le fichier), on retire l'indentation de chaque ligne juste avant
+    le rendu pour éliminer le risque, plutôt que d'aplatir chaque bloc à la main.
+    """
+    return "\n".join(line.lstrip() for line in s.strip("\n").split("\n"))
+
+
+# ----------------------------------------------------------------
+#  INTERFACE STREAMLIT
+# ----------------------------------------------------------------
+def main():
+    st.set_page_config(
+        page_title="BLUESTAR SNIPER V16",
+        layout="wide",
+        initial_sidebar_state="collapsed"
+    )
+
+    # Thème : contraste légèrement relevé (fond plus profond, texte/bordures plus
+    # lisibles) et effet néon atténué (halos, glows et dégradés d'ambiance réduits).
+    st.markdown(_html("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+    :root{
+      --bg:#03050a;
+      --surface:#090c16;   --surface-3:#1f2940;
+      --line:#323d5c;      --line-2:#46547d;
+      --ink:#ffffff;       --ink-2:#e1e7f5;
+      --muted:#a8b2cc;     --muted-2:#8791ae;
+      --azure-2:#9cc7fd;   --iris:#a78bfa;
+    }
+
+    html, body, [class*="css"]{
+      font-family:'Inter Tight',-apple-system,BlinkMacSystemFont,sans-serif;
+      -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+    }
+    .stApp{
+      background:
+        radial-gradient(1150px 540px at 6% -14%,  rgba(96,165,250,.075), transparent 62%),
+        radial-gradient(920px  480px at 94% -8%,  rgba(244,114,182,.055), transparent 62%),
+        radial-gradient(760px  440px at 48% 112%, rgba(94,234,212,.035), transparent 62%),
+        var(--bg);
+    }
+    .block-container{padding-top:2.1rem;padding-bottom:4rem;max-width:1520px}
+    #MainMenu, footer, header[data-testid="stHeader"]{background:transparent}
+    h1,h2,h3{font-family:'Inter Tight',sans-serif!important;font-weight:600!important;
+             letter-spacing:-.015em!important}
+
+    /* ── CTA : dégradé menthe → azur → fuchsia ─────────────────── */
+    .stButton>button{
+      background:linear-gradient(94deg,#5eead4 0%,#60a5fa 46%,#f472b6 100%)!important;
+      color:#050a14!important;border:none!important;
+      font-family:'Inter Tight',sans-serif!important;font-weight:700!important;
+      font-size:13px!important;letter-spacing:.16em!important;text-transform:uppercase!important;
+      border-radius:12px!important;padding:14px 0!important;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.18),
+                 0 8px 22px -14px rgba(96,165,250,.5)!important;
+      transition:transform .16s cubic-bezier(.2,.8,.2,1),box-shadow .18s ease,filter .18s ease!important;
+    }
+    .stButton>button:hover{
+      transform:translateY(-1.5px)!important;filter:saturate(1.03) brightness(1.03)!important;
+      box-shadow:0 12px 26px -14px rgba(244,114,182,.4),
+                 inset 0 1px 0 rgba(255,255,255,.22)!important;
+    }
+    .stButton>button:active{transform:translateY(0)!important}
+
+    /* ── Contrôles ─────────────────────────────────────────────── */
+    .stSelectbox label, .stToggle label{
+      color:var(--muted)!important;font-size:10.5px!important;font-weight:600!important;
+      letter-spacing:.13em!important;text-transform:uppercase!important;
+    }
+    .stSelectbox div[data-baseweb="select"]>div{
+      background:rgba(19,24,38,.85)!important;border:1px solid var(--line)!important;
+      border-radius:11px!important;min-height:44px!important;
+      transition:border-color .16s ease, box-shadow .16s ease!important;
+    }
+    .stSelectbox div[data-baseweb="select"]>div:hover{border-color:var(--line-2)!important}
+    .stSelectbox div[data-baseweb="select"]>div:focus-within{
+      border-color:rgba(96,165,250,.7)!important;
+      box-shadow:0 0 0 2px rgba(96,165,250,.1)!important;
+    }
+    .stSelectbox div[data-baseweb="select"] *{color:var(--ink)!important;font-size:14px!important}
+    div[data-baseweb="popover"] ul{background:var(--surface)!important;
+      border:1px solid var(--line)!important;border-radius:11px!important}
+    div[data-baseweb="popover"] li:hover{background:var(--surface-3)!important}
+
+    /* ── Expander / légende ────────────────────────────────────── */
+    [data-testid="stExpander"]{
+      background:linear-gradient(180deg,rgba(19,24,38,.8),rgba(13,17,29,.8))!important;
+      border:1px solid var(--line)!important;border-radius:14px!important;overflow:hidden!important;
+    }
+    [data-testid="stExpander"] summary{
+      color:var(--ink-2)!important;font-size:12px!important;font-weight:600!important;
+      letter-spacing:.1em!important;text-transform:uppercase!important;
+    }
+    [data-testid="stExpander"] table{border-collapse:collapse!important;font-size:13px!important}
+    [data-testid="stExpander"] th{
+      color:var(--muted)!important;font-size:10.5px!important;text-transform:uppercase!important;
+      letter-spacing:.1em!important;border-bottom:1px solid var(--line)!important;
+      background:transparent!important;padding:9px 12px!important;text-align:left!important;
+    }
+    [data-testid="stExpander"] td{
+      color:var(--ink-2)!important;border-bottom:1px solid rgba(50,61,92,.7)!important;
+      padding:9px 12px!important;
+    }
+    [data-testid="stExpander"] code{
+      background:rgba(96,165,250,.09)!important;color:var(--azure-2)!important;
+      font-family:'JetBrains Mono',monospace!important;font-size:11.5px!important;
+      border-radius:5px!important;padding:1px 5px!important;
+    }
+
+    hr{border:none!important;height:1px!important;
+       background:linear-gradient(90deg,transparent,var(--line) 12%,var(--line) 88%,transparent)!important;
+       margin:20px 0!important}
+    ::selection{background:rgba(167,139,250,.28)}
+    ::-webkit-scrollbar{height:9px;width:9px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:var(--surface-3);border-radius:9px}
+    ::-webkit-scrollbar-thumb:hover{background:var(--line-2)}
+
+    /* ── Grille KPI ────────────────────────────────────────────── */
+    .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+              gap:12px;margin:6px 0 26px}
+    .kpi{position:relative;background:linear-gradient(168deg,rgba(19,24,38,.92),rgba(12,16,28,.92));
+         border:1px solid var(--line);border-radius:15px;padding:15px 16px 14px;overflow:hidden;
+         transition:border-color .18s ease,transform .18s cubic-bezier(.2,.8,.2,1)}
+    .kpi:hover{transform:translateY(-2px);border-color:var(--line-2)}
+    .kpi::before{content:"";position:absolute;top:0;left:16px;right:16px;height:1.5px;
+                 background:var(--acc);border-radius:2px;opacity:.85}
+    .kpi::after{content:"";position:absolute;top:-42px;right:-42px;width:104px;height:104px;
+                border-radius:50%;background:var(--acc);opacity:.045;filter:blur(6px)}
+    .kpi-l{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px;
+           font-weight:600;letter-spacing:.14em;text-transform:uppercase}
+    .kpi-v{font-family:'JetBrains Mono',monospace;font-size:29px;font-weight:500;
+           color:var(--ink);line-height:1.15;margin-top:9px;font-variant-numeric:tabular-nums}
+    .kpi-dim .kpi-v{color:var(--muted-2)}
+
+    @keyframes bs-breathe{0%,100%{transform:scale(1);opacity:.3}50%{transform:scale(1.45);opacity:0}}
+    @keyframes bs-ping{0%,100%{opacity:1}50%{opacity:.45}}
+    .bs-pulse{animation:bs-breathe 2.4s cubic-bezier(.2,.6,.3,1) infinite}
+    .bs-dot{animation:bs-ping 1.9s ease-in-out infinite}
+    </style>
+    """), unsafe_allow_html=True)
+
+    # Killzone active — calculée une seule fois
+    kz_now = get_current_killzone()
+    if kz_now:
+        _kc = killzone_color(kz_now)
+        kz_html = (
+            f'<span style="display:inline-flex;align-items:center;gap:7px;margin-left:14px;'
+            f'padding:5px 11px 5px 9px;border-radius:30px;vertical-align:middle;'
+            f'background:linear-gradient(90deg,{_kc}1a,{_kc}08);'
+            f'border:1px solid {_kc}4d">'
+            f'<span class="bs-dot" style="width:5px;height:5px;border-radius:50%;'
+            f'background:{_kc};box-shadow:0 0 3px {_kc}"></span>'
+            f'<span style="font-size:10px;font-weight:600;letter-spacing:.15em;'
+            f'color:{_kc}">{killzone_badge(kz_now)}</span></span>'
+        )
+    else:
+        kz_html = ""
+
+    st.markdown(_html(f"""
+    <div style="display:flex;align-items:center;gap:17px;margin-bottom:18px">
+      <div style="position:relative;width:48px;height:48px;flex-shrink:0">
+        <svg viewBox="0 0 48 48" width="48" height="48" fill="none">
+          <defs>
+            <linearGradient id="bsg" x1="4" y1="4" x2="44" y2="44">
+              <stop offset="0%"   stop-color="#5eead4"/>
+              <stop offset="52%"  stop-color="#60a5fa"/>
+              <stop offset="100%" stop-color="#f472b6"/>
+            </linearGradient>
+          </defs>
+          <circle cx="24" cy="24" r="21" stroke="url(#bsg)" stroke-width="1.3" opacity=".42"/>
+          <circle cx="24" cy="24" r="13.5" stroke="url(#bsg)" stroke-width="1.3" opacity=".85"/>
+          <path d="M24 1.5v9M24 37.5v9M1.5 24h9M37.5 24h9"
+                stroke="url(#bsg)" stroke-width="1.3" stroke-linecap="round" opacity=".65"/>
+          <circle cx="24" cy="24" r="3.6" fill="url(#bsg)"/>
+        </svg>
+        <div class="bs-pulse" style="position:absolute;inset:6px;border-radius:50%;
+             border:1px solid #60a5fa"></div>
+      </div>
+      <div>
+        <h1 style="margin:0;font-size:27px;color:var(--ink);font-weight:600;letter-spacing:-.02em">
+          Bluestar <span style="font-weight:400;color:var(--ink-2)">Sniper</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;
+                color:var(--iris);background:rgba(167,139,250,.1);border:1px solid rgba(167,139,250,.3);
+                padding:3px 8px;border-radius:7px;margin-left:9px;vertical-align:middle">V16</span>
+          {kz_html}
+        </h1>
+        <p style="margin:6px 0 0;display:flex;flex-wrap:wrap;align-items:center;gap:6px;
+                  color:var(--muted);font-size:12px;letter-spacing:.05em">
+          <span>HMA 20 · M15</span>
+          <span style="color:var(--muted-2);opacity:.7">/</span>
+          <span>Multi-timeframe</span>
+          <span style="color:var(--muted-2);opacity:.7">/</span>
+          <span>Zones ICT</span>
+          <span style="color:var(--muted-2);opacity:.7">/</span>
+          <span>FVG &amp; Currency Strength</span>
+        </p>
+      </div>
+    </div>
+    <hr>
+    """), unsafe_allow_html=True)
+
+    # Seul le token est utilisé (les endpoints candles n'ont pas besoin de l'account id).
+    if "OANDA_ACCESS_TOKEN" not in st.secrets:
+        st.error("🔑 **Secret manquant :** `OANDA_ACCESS_TOKEN`")
+        st.stop()
+
+    ACCESS_TOKEN = st.secrets["OANDA_ACCESS_TOKEN"]
+
+    # environnement configurable via secrets
+    env = st.secrets.get("OANDA_ENVIRONMENT", "practice")
+    if env not in ("practice", "live"):
+        st.error(f"⚠️ OANDA_ENVIRONMENT invalide : `{env}` — doit être `practice` ou `live`")
+        st.stop()
+    if env == "live":
+        st.warning("⚠️ **CONNEXION COMPTE RÉEL (live)** — opérations sur capital réel")
+
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        freshness  = st.selectbox("Fraîcheur max du signal (min)", [15, 30, 45, 60], index=1)
+    with col2:
+        min_grade  = st.selectbox("Grade minimum", ["Tous", "B", "B+", "A", "A+"], index=0)
+    with col3:
+        show_debug = st.toggle("🐛 Debug", value=False)
+
+    with st.expander("📘 Grille de notation V16"):
+        st.markdown("""
+| Critère | Max | Détail |
+|---|---|---|
+| **Trigger HMA flip** | 30 pts | ≤15 min = 30 · ≤30 min = 20 · ≤45 min = 10 · >45 min = 0 (fraîcheur = temps réel écoulé) |
+| **MTF Alignment** | 25 pts | ≥80% = 25 · ≥65% = 18 · ≥50% = 10 · contre-MTF = 0 |
+| **Zone D1** | 15 pts | Discount/Premium (EXT LOW/HIGH inclus) = 15 · sinon 0 |
+| **Midnight Bonus** | 3 pts | Confluence directionnelle avec MO |
+| **FVG M15** | 15 pts | Variante LuxAlgo (mitigation + seuil auto) |
+| **ADX momentum** | 10 pts | ADX>25+DI ok = 10 · ADX>20+DI ok = 6 |
+| **ATR actif** | 5 pts | ≥ moyenne = 5 · ≥ 50% = 3 |
+| **ADR Malus** | -5 pts | Range journalier > 70% consommé depuis minuit NY (forex/métaux/crypto — non applicable aux indices, notés en ATR) |
+| **Bias Malus** | -20 pts | Signal contraire (⚠ COUNTER) au biais journalier 5 facteurs |
+
+Score max réel = **103** (échelle affichée « /103 », pas /100), plage possible [−25 ; 103].
+
+| Colonne | Description |
+|---|---|
+| **Zone** | DISCOUNT = prix sous MO (00h00 NY) · PREMIUM = prix dessus · EXT HIGH/LOW = hors PDH/PDL |
+| **ADR / ATR** | Valeur + jauge de consommation du range (🟢 <40% · 🟡 40–70% · 🔴 >70%) |
+| **Force** | ■■■ = ADX H4·H1·M15 ≥ 25 alignés · chiffre = Strength Δ base/quote (n/a pour indices, métaux et crypto) |
+        """)
+
+    run = st.button("🚀  LANCER LE SCANNER", use_container_width=True)
+
+    if not run:
+        st.markdown(_html(f"""
+        <div style="text-align:center;padding:86px 0 74px">
+          <div style="position:relative;width:72px;height:72px;margin:0 auto 26px">
+            <div class="bs-pulse" style="position:absolute;inset:0;border-radius:50%;
+                 border:1px solid #60a5fa"></div>
+            <svg viewBox="0 0 72 72" width="72" height="72" fill="none">
+              <defs><linearGradient id="bse" x1="8" y1="8" x2="64" y2="64">
+                <stop offset="0%" stop-color="#5eead4"/><stop offset="50%" stop-color="#60a5fa"/>
+                <stop offset="100%" stop-color="#f472b6"/></linearGradient></defs>
+              <circle cx="36" cy="36" r="30" stroke="url(#bse)" stroke-width="1.1" opacity=".35"/>
+              <circle cx="36" cy="36" r="18" stroke="url(#bse)" stroke-width="1.1" opacity=".65"/>
+              <path d="M36 2v12M36 58v12M2 36h12M58 36h12" stroke="url(#bse)"
+                    stroke-width="1.1" stroke-linecap="round" opacity=".55"/>
+              <circle cx="36" cy="36" r="4.5" fill="url(#bse)"/>
+            </svg>
+          </div>
+          <div style="font-size:15px;color:var(--ink-2);font-weight:500">
+            Scanner en veille
+          </div>
+          <div style="font-size:12.5px;color:var(--muted);margin-top:7px;letter-spacing:.04em">
+            {len(ASSETS)} instruments · 6 timeframes · lance l'analyse pour révéler les setups actifs
+          </div>
+        </div>
+        """), unsafe_allow_html=True)
+        return
+
+    results   = []
+    debug_log = []
+    _lock     = threading.Lock()
+    progress  = st.progress(0)
+    status    = st.empty()
+    t_start   = time.time()
+
+    strength_scores = {}
+    with st.spinner("Calcul Currency Strength H1…"):
+        dfs_h1 = fetch_strength_data(ACCESS_TOKEN, env)
+        strength_scores = compute_currency_strength(dfs_h1)
+
+    # outer pool limité à 3 workers.
+    # Chaque analyze_asset() spawne un inner pool de 6 threads OANDA.
+    # 3 × 6 = 18 connexions simultanées max → dans les limites OANDA sans 429.
+    # Avec 8 outer workers (ancienne valeur) : 48 connexions → freeze garanti.
+    MAX_OUTER_WORKERS = 3
+    with st.spinner("Analyse MTF en cours…"):
+        completed_count = 0
+        with ThreadPoolExecutor(max_workers=MAX_OUTER_WORKERS) as ex:
+            future_map = {
+                ex.submit(
+                    analyze_asset,
+                    ACCESS_TOKEN, env, ticker,
+                    freshness, strength_scores, debug_log, _lock
+                ): ticker
+                for ticker in ASSETS
+            }
+            for fut in as_completed(future_map):
+                ticker = future_map[fut]
+                try:
+                    res = fut.result()
+                    if res:
+                        with _lock:
+                            results.append(res)
+                except Exception as _e:
+                    logger.error("Outer future %s: %s", ticker, _e)
+                completed_count += 1
+                progress.progress(completed_count / len(ASSETS))
+                status.caption(f"⏳ {DISPLAY_NAMES.get(ticker, ticker)}… ({completed_count}/{len(ASSETS)})")
+
+    elapsed = round(time.time() - t_start, 1)
+    status.empty()
+    progress.empty()
+
+    if show_debug:
+        with st.expander(f"🐛 Debug — {len(debug_log)} rejetés en {elapsed}s"):
+            if debug_log:
+                cols_d = st.columns(2)
+                with cols_d[0]:
+                    cats = Counter()
+                    for _, reason in debug_log:
+                        # catégorie = texte avant ":" (ex. FETCH_M15, NO_HMA_FLIP, EXCEPTION)
+                        cats[reason.split(":")[0].strip()] += 1
+                    st.markdown("**Raisons agrégées**")
+                    for cat, n in cats.most_common():
+                        st.markdown(f"- `{cat}` → **{n}**")
+                with cols_d[1]:
+                    st.markdown("**Détail par actif**")
+                    for ticker, reason in debug_log[:30]:
+                        st.markdown(f"`{ticker}` — {reason}")
+
+    if not results:
+        st.warning("**Aucun signal valide détecté** sur cette session.")
+        return
+
+    # Recalculé après la fin du scan (corrigé V16.1) — la valeur capturée avant le scan
+    # (purement décorative pour l'en-tête pré-scan) pouvait dater de 30-60s et
+    # être utilisée telle quelle pour le badge de chaque ligne et le pied de tableau,
+    # ratant une bascule de fenêtre survenue pendant le scan.
+    kz_now = get_current_killzone()
+
+    df = pd.DataFrame(results)
+
+    grade_order = {"A+": 5, "A": 4, "B+": 3, "B": 2, "C": 1}
+    min_map     = {"Tous": 0, "B": 2, "B+": 3, "A": 4, "A+": 5}
+    min_val     = min_map[min_grade]
+    df = df[df["Grade"].map(grade_order) >= min_val]
+
+    if df.empty:
+        st.info("Aucun signal avec ces filtres.")
+        return
+
+    def sort_key(row):
+        fresh = 1 if "⚡" in str(row["Fraîcheur"]) else 0
+        g     = grade_order.get(row["Grade"], 0)
+        s     = row["Score /100"]
+        m     = row["MTF Pct"]
+        mom   = row.get("Momentum", 0)
+        # Score avant Momentum (corrigé V16.1) — l'ordre précédent (-mom avant -s)
+        # contredisait la grille affichée, qui met le Score/Grade en avant.
+        return (-fresh, -g, -s, -mom, -m)
+
+    df["_sk"] = df.apply(sort_key, axis=1)
+    df = df.sort_values("_sk").drop(columns=["_sk"]).reset_index(drop=True)
+
+    a_plus  = len(df[(df["Grade"] == "A+") & df["Fraîcheur"].str.contains("⚡", na=False)])
+    a_grade = len(df[(df["Grade"] == "A")  & df["Fraîcheur"].str.contains("⚡", na=False)])
+    b_watch = len(df[df["Grade"].isin(["B+","B"]) & df["Fraîcheur"].str.contains("⚡", na=False)])
+    longs   = len(df[df["Signal"].str.contains("LONG",  na=False) & ~df["Signal"].str.contains("expiré")])
+    shorts  = len(df[df["Signal"].str.contains("SHORT", na=False) & ~df["Signal"].str.contains("expiré")])
+    max_mom = len(df[df.get("Momentum", 0) == 3]) if "Momentum" in df.columns else 0
+
+    _kpis = [
+        ("A+ PREMIUM",  a_plus,  "#a78bfa", ICON_TARGET),
+        ("GRADE A",     a_grade, "#60a5fa", ICON_TARGET),
+        ("WATCHLIST",   b_watch, "#a8b2cc", ICON_CLOCK),
+        ("LONG ACTIFS", longs,   "#5eead4", icon_arrow(True, 12)),
+        ("SHORT ACTIFS",shorts,  "#f472b6", icon_arrow(False, 12)),
+        ("FORCE MAX",   max_mom, "#f9a8d4", ICON_BOLT),
+    ]
+    _cards = "".join(
+        f'<div class="kpi{"" if v else " kpi-dim"}" style="--acc:{c}">'
+        f'<div class="kpi-l"><span style="color:{c};display:inline-flex">{ic}</span>{lbl}</div>'
+        f'<div class="kpi-v">{v}</div></div>'
+        for lbl, v, c, ic in _kpis
+    )
+    st.markdown(f'<div class="kpi-grid">{_cards}</div>', unsafe_allow_html=True)
+
+    # ── STYLES ───────────────────────────────────────────────────
+    # ── PALETTE DES GRADES ───────────────────────────────────────
+    GRADE_STYLE = {
+        "A+": {"color": "#d4c8ff", "line": "#a78bfa", "bg": "rgba(167,139,250,.11)", "label": "A+"},
+        "A":  {"color": "#b0d3ff", "line": "#60a5fa", "bg": "rgba(96,165,250,.08)", "label": "A"},
+        "B+": {"color": "#b8f5ea", "line": "#5eead4", "bg": "transparent",            "label": "B+"},
+        "B":  {"color": "#bcc6dc", "line": "#8791ae", "bg": "transparent",            "label": "B"},
+        "C":  {"color": "#97a2bf", "line": "#5d6a92", "bg": "transparent",            "label": "C"},
+    }
+
+    def fresh_cell(fresh_str: str, is_fresh: bool) -> str:
+        txt = fresh_str.replace("⚡", "").replace("⏳", "").strip()
+        col = "#5eead4" if is_fresh else "#a8b2cc"
+        ico = ICON_BOLT if is_fresh else ICON_CLOCK
+        dot = (f'<span class="bs-dot" style="width:4px;height:4px;border-radius:50%;'
+               f'background:{col};box-shadow:0 0 3px {col}"></span>' if is_fresh else "")
+        bg  = "rgba(94,234,212,.16)" if is_fresh else "rgba(135,145,174,.14)"
+        bd  = "rgba(94,234,212,.6)" if is_fresh else "rgba(135,145,174,.4)"
+        return (f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
+                f'background:{bg};border:1px solid {bd};padding:4px 10px;border-radius:30px;'
+                f'font-family:\'JetBrains Mono\',monospace;font-size:12.5px;font-weight:600;'
+                f'white-space:nowrap">{dot}<span style="display:inline-flex">{ico}</span>{txt}</span>')
+
+    def sig_cell(sig: str, is_bull: bool) -> str:
+        expired = "expiré" in sig
+        col     = ("#5eead4" if is_bull else "#f472b6") if not expired else "#a8b2cc"
+        word    = "LONG" if is_bull else "SHORT"
+        if expired:
+            return (f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
+                    f'font-size:11.5px;letter-spacing:.1em;font-weight:600">'
+                    f'<span style="display:inline-flex;opacity:.75">{icon_arrow(is_bull, 10)}</span>'
+                    f'{word} · EXPIRÉ</span>')
+        return (f'<span style="display:inline-flex;align-items:center;gap:7px;color:{col};'
+                f'background:{col}26;border:1px solid {col}99;padding:5px 12px 5px 10px;'
+                f'border-radius:9px;font-size:14px;font-weight:700;letter-spacing:.09em">'
+                f'<span style="display:inline-flex">{icon_arrow(is_bull, 12)}</span>{word}</span>')
+
+    BIAS_MAP = {
+        "STRONG BULLISH": ("Strong bull", "#5eead4", 2, True),
+        "BULLISH":        ("Bull",        "#a9f3e6", 1, True),
+        "STRONG BEARISH": ("Strong bear", "#f472b6", 2, False),
+        "BEARISH":        ("Bear",        "#f9a8d4", 1, False),
+    }
+
+    def bias_cell(b: str) -> str:
+        if b not in BIAS_MAP:
+            return ('<span style="color:#a8b2cc;font-size:14px;letter-spacing:.04em">'
+                    '— Neutral</span>')
+        label, col, strength, up = BIAS_MAP[b]
+        arrows = "".join(f'<span style="display:inline-flex">{icon_arrow(up, 10)}</span>'
+                         for _ in range(strength))
+        weight = 700
+        return (f'<span style="display:inline-flex;align-items:center;gap:2px;color:{col};'
+                f'font-size:14.5px;font-weight:{weight};letter-spacing:.01em">'
+                f'{arrows}<span style="margin-left:5px">{label}</span></span>')
+
+    ZONE_MAP = {
+        "DISCOUNT":  ("#7db6ff", "rgba(96,165,250,.18)",  "rgba(96,165,250,.7)"),
+        "PREMIUM":   ("#fbc0e0", "rgba(249,168,212,.17)", "rgba(249,168,212,.7)"),
+        "EXT HIGH":  ("#f78ec4", "rgba(244,114,182,.22)", "rgba(244,114,182,.8)"),
+        "EXT LOW":   ("#7ff0dc", "rgba(94,234,212,.2)",  "rgba(94,234,212,.8)"),
+        "EQUILIBRE": ("#d3dbec", "rgba(168,178,204,.16)", "rgba(168,178,204,.55)"),
+    }
+
+    def zone_cell(z: str, mn_bonus: bool) -> str:
+        col, bg, bd = ZONE_MAP.get(z, ZONE_MAP["EQUILIBRE"])
+        moon = (f'<span style="color:#d4c8ff;display:inline-flex;margin-left:7px" '
+                f'title="Confluence midnight open">{ICON_MOON}</span>' if mn_bonus else "")
+        return (f'<span style="display:inline-flex;align-items:center">'
+                f'<span style="color:{col};background:{bg};border:1px solid {bd};'
+                f'padding:5px 11px;border-radius:7px;font-size:11px;font-weight:700;'
+                f'letter-spacing:.11em;white-space:nowrap">{z}</span>{moon}</span>')
+
+    def score_bar(score):
+        """Score négatif possible (malus ADR/Bias) — affiché tel quel."""
+        if score >= 85:
+            grad, col, glow = "linear-gradient(90deg,#60a5fa,#a78bfa 55%,#f472b6)", "#ece6ff", "0 0 5px -1px rgba(167,139,250,.5)"
+        elif score >= 70:
+            grad, col, glow = "linear-gradient(90deg,#5eead4,#60a5fa)", "#dcecff", "0 0 4px -1px rgba(96,165,250,.45)"
+        elif score >= 55:
+            grad, col, glow = "linear-gradient(90deg,#3f6f8f,#5eead4)", "#d9fbf5", "none"
+        elif score >= 40:
+            grad, col, glow = "linear-gradient(90deg,#5d6a92,#a8b2cc)", "#e1e7f5", "none"
+        else:
+            grad, col, glow = "linear-gradient(90deg,#363f5c,#8791ae)", "#c3cce0", "none"
+        width = max(3, min(score, 103) / 103 * 100) if score >= 0 else 3
+        return (f'<div style="display:flex;align-items:center;gap:11px">'
+                f'<span style="color:{col};font-weight:700;font-size:22px;'
+                f'font-family:\'JetBrains Mono\',monospace;font-variant-numeric:tabular-nums;'
+                f'min-width:40px;text-align:right">{score}</span>'
+                f'<div style="width:72px;height:6px;background:rgba(90,104,150,.55);'
+                f'border-radius:3px;overflow:hidden">'
+                f'<div style="width:{width}%;height:100%;background:{grad};'
+                f'border-radius:3px;box-shadow:{glow}"></div></div></div>')
+
+    def adr_cell(v, label="ADR", consumed: float | None = None):
+        if v is None:
+            return '<span style="color:#a8b2cc">—</span>'
+        formatted = f"{v:.5f}" if v < 1.0 else f"{v:.2f}"
+        tag_color = "#60a5fa" if label == "ADR" else "#c4b5fd"
+        head = (f'<div style="display:flex;align-items:baseline;gap:7px">'
+                f'<span style="color:{tag_color};font-size:10px;font-weight:700;letter-spacing:.12em;'
+                f'background:{tag_color}12;border:1px solid {tag_color}40;padding:2px 6px;'
+                f'border-radius:5px">{label}</span>'
+                f'<span style="color:var(--ink);font-weight:600;font-family:\'JetBrains Mono\',monospace;'
+                f'font-size:15px;font-variant-numeric:tabular-nums">{formatted}</span></div>')
+        if consumed is None or (isinstance(consumed, float) and np.isnan(consumed)):
+            return head
+        consumed = float(consumed)
+        if   consumed < 40: c = "#5eead4"
+        elif consumed < 70: c = "#fbbf24"
+        else:               c = "#f472b6"
+        fill = int(min(max(consumed, 0), 100))
+        gauge = (f'<div style="display:flex;align-items:center;gap:7px;margin-top:6px">'
+                 f'<div style="width:60px;height:4px;background:rgba(90,104,150,.55);'
+                 f'border-radius:2px;overflow:hidden">'
+                 f'<div style="width:{fill}%;height:100%;background:{c};border-radius:2px">'
+                 f'</div></div>'
+                 f'<span style="color:{c};font-size:11px;font-family:\'JetBrains Mono\',monospace;'
+                 f'font-weight:700">{consumed:.0f}%</span></div>')
+        return f'<div>{head}{gauge}</div>'
+
+    def force_cell(momentum_score: int, delta, is_bull: bool) -> str:
+        col = "#5eead4" if is_bull else "#f472b6"
+        seg = "".join(
+            (f'<div style="width:16px;height:9px;border-radius:2px;background:{col};'
+             f'box-shadow:0 0 4px -1px {col}"></div>') if i < momentum_score else
+            '<div style="width:16px;height:9px;border-radius:2px;background:rgba(90,104,150,.55)"></div>'
+            for i in range(3)
+        )
+        bars = f'<div style="display:flex;gap:4px;align-items:center">{seg}</div>'
+        if delta is not None:
+            dc = ("#5eead4" if delta >= 1.5 else "#f472b6" if delta <= -1.5 else "#a8b2cc")
+            sign = "+" if delta > 0 else ""
+            dh = (f'<span style="color:{dc};background:{dc}22;border:1px solid {dc}77;'
+                  f'padding:2px 7px;border-radius:6px;font-weight:700;font-size:13px;'
+                  f'font-family:\'JetBrains Mono\',monospace;margin-left:10px;'
+                  f'font-variant-numeric:tabular-nums">{sign}{delta:.1f}</span>')
+        else:
+            dh = ('<span style="color:#a8b2cc;margin-left:10px;font-size:11.5px;'
+                  'font-family:\'JetBrains Mono\',monospace">n/a</span>')
+        return f'<div style="display:flex;align-items:center">{bars}{dh}</div>'
+
+    # ── TABLEAU ──────────────────────────────────────────────────
+    html = """
+<style>
+.sc-wrap{overflow-x:auto;border:1px solid #3d4a70;border-radius:17px;
+  background:linear-gradient(180deg,#131a2f,#0d1325);
+  box-shadow:0 20px 44px -30px rgba(0,0,0,.9),0 0 0 1px rgba(255,255,255,.03)}
+.sc-tbl{width:100%;border-collapse:separate;border-spacing:0;
+  font-family:'Inter Tight',sans-serif;font-size:14.5px;font-weight:500;color:var(--ink)}
+.sc-tbl thead th{
+  padding:14px 18px;text-align:left;white-space:nowrap;
+  color:var(--ink-2);font-size:10.5px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;
+  background:#19223b;border-bottom:1px solid #4a5985;
+  position:sticky;top:0;backdrop-filter:blur(3px);z-index:2}
+.sc-tbl td{padding:15px 18px;border-bottom:1px solid rgba(90,104,150,.45);vertical-align:middle}
+.sc-tbl tbody tr:nth-child(even) td{background:rgba(255,255,255,.028)}
+.sc-tbl tbody tr{transition:background .14s ease}
+.sc-tbl tbody tr:hover td{background:rgba(70,90,150,.28)}
+.sc-tbl tbody tr:last-child td{border-bottom:none}
+.sc-tbl td:first-child{position:relative;padding-left:20px}
+.sc-tbl td:first-child::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;
+  border-radius:0 3px 3px 0}
+.rail-bull td:first-child::before{background:linear-gradient(180deg,#5eead4,rgba(94,234,212,.2))}
+.rail-bear td:first-child::before{background:linear-gradient(180deg,#f472b6,rgba(244,114,182,.2))}
+.ticker{font-size:19px;font-weight:700;color:var(--ink);white-space:nowrap;letter-spacing:-.01em;
+  font-variant-numeric:tabular-nums}
+.stale .ticker{color:var(--ink-2)}
+.grade-pill{display:inline-block;padding:3px 10px;border-radius:7px;font-size:11.5px;font-weight:700;
+  letter-spacing:.06em;margin-left:11px;vertical-align:middle;font-family:'JetBrains Mono',monospace}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:30px;
+  font-size:10.5px;font-weight:700;letter-spacing:.12em;margin-left:9px;vertical-align:middle}
+</style>
+<div class="sc-wrap"><table class="sc-tbl">
+<thead><tr>
+  <th style="width:132px">Fraîcheur</th>
+  <th>Actif</th>
+  <th>Signal</th>
+  <th>Biais daily</th>
+  <th>Zone</th>
+  <th style="width:140px">Score /103</th>
+  <th>ADR / ATR</th>
+  <th>Force</th>
+</tr></thead><tbody>
+"""
+
+    for _, row in df.iterrows():
+        grade     = str(row.get("Grade", "C"))
+        fresh     = "⚡" in str(row.get("Fraîcheur", ""))
+        gs        = GRADE_STYLE.get(grade, GRADE_STYLE["C"])
+        score     = int(row.get("Score /100", 0))
+        ticker_raw = str(row.get("Actif + Note", "")).split("  ")[0].strip()
+        ticker    = DISPLAY_NAMES.get(ticker_raw, ticker_raw)
+        sig       = str(row.get("Signal", "—"))
+        adr_v     = row.get("ADR")
+        adr_lbl   = str(row.get("ADR Label", "ADR"))
+        adr_cons  = row.get("ADR Consumed")
+        bias      = str(row.get("Biais Daily", "—"))
+        alignment = str(row.get("Alignement", "ALIGNED"))
+        zone      = str(row.get("Zone", "—"))
+        fresh_str = str(row.get("Fraîcheur", "—"))
+        sdelta    = row.get("Strength Δ")
+        momentum  = int(row.get("Momentum", 0))
+        is_bull   = bool(row.get("signal_is_bull", True))
+        mn_bonus  = bool(row.get("Midnight Bonus", False))
+
+        align_tag = (f'<span class="chip" style="background:rgba(244,114,182,.18);'
+                     f'border:1px solid rgba(244,114,182,.7);color:#f78ec4">'
+                     f'{ICON_ALERT}COUNTER</span>') if alignment == "COUNTER" else ""
+
+        if kz_now and fresh:
+            _kc = killzone_color(kz_now)
+            kz_tag = (f'<span class="chip" style="background:{_kc}22;border:1px solid {_kc}80;'
+                      f'color:{_kc}">{killzone_badge(kz_now)}</span>')
+        else:
+            kz_tag = ""
+
+        row_bg = gs["bg"] if fresh and grade in ("A+", "A") else "transparent"
+        rail   = ("rail-bull" if is_bull else "rail-bear") + ("" if fresh else " stale")
+        row_style = f'background:{row_bg}'
+        if fresh and grade == "A+":
+            row_style += ';box-shadow:inset 0 0 36px -16px rgba(167,139,250,.22)'
+
+        html += f"""<tr class="{rail}" style="{row_style}">
+  <td>{fresh_cell(fresh_str, fresh)}</td>
+  <td style="white-space:nowrap">
+    <span class="ticker">{ticker}</span>
+    <span class="grade-pill" style="color:{gs['color']};background:{gs['line']}30;
+          border:1px solid {gs['line']}aa">{gs['label']}</span>
+    {align_tag}
+  </td>
+  <td style="white-space:nowrap">{sig_cell(sig, is_bull)}{kz_tag}</td>
+  <td>{bias_cell(bias)}</td>
+  <td>{zone_cell(zone, mn_bonus)}</td>
+  <td>{score_bar(score)}</td>
+  <td>{adr_cell(adr_v, adr_lbl, consumed=adr_cons)}</td>
+  <td>{force_cell(momentum, sdelta, is_bull)}</td>
+</tr>"""
+
+    html += "</tbody></table></div>"
+    st.markdown(_html(html), unsafe_allow_html=True)
+
+    _kz_foot = (f'<span style="color:{killzone_color(kz_now)}">'
+                f'killzone {killzone_badge(kz_now)} active</span>' if kz_now else
+                '<span style="color:#7480a0">hors killzone</span>')
+    st.markdown(_html(f"""
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:14px;
+                margin-top:14px;font-size:10.5px;letter-spacing:.1em;font-weight:600;
+                text-transform:uppercase;color:var(--muted)">
+      <span>{len(df)} signal(s)</span>
+      <span style="color:#46547d">•</span>
+      <span style="font-family:'JetBrains Mono',monospace;text-transform:none;letter-spacing:.02em">
+        {elapsed}s</span>
+      <span style="color:#46547d">•</span>
+      <span style="font-family:'JetBrains Mono',monospace;text-transform:none;letter-spacing:.02em">
+        {datetime.now().strftime('%H:%M:%S')}</span>
+      <span style="color:#46547d">•</span>
+      {_kz_foot}
+    </div>
+    """), unsafe_allow_html=True)
+
+
+if __name__ == "__main__":
+    main()
