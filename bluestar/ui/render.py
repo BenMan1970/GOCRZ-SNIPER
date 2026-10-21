@@ -253,20 +253,32 @@ def force_cell(momentum_score: int, delta: float | None, is_bull: bool) -> str:
         '<div style="width:14px;height:8px;border-radius:2px;background:#16253b"></div>'
         for i in range(3)
     )
-    bars = f'<div style="display:flex;gap:4px;align-items:center">{seg}</div>'
+    bars = (
+        f'<div style="display:flex;gap:4px;align-items:center" '
+        f'title="ADX H4/H1/M15 alignés avec le signal : {momentum_score}/3">{seg}</div>'
+    )
     if delta is not None:
-        dc = "#34d399" if delta >= 1.5 else "#fb7185" if delta <= -1.5 else "#91a4bf"
+        if abs(delta) < 1.5:
+            dc, rel = "#91a4bf", "neutre"
+        elif (delta > 0) == is_bull:
+            dc, rel = "#34d399", "favorable"
+        else:
+            dc, rel = "#fb7185", "contraire"
         sign = "+" if delta > 0 else ""
+        side = "LONG" if is_bull else "SHORT"
         dh = (
             f'<span style="color:{dc};background:{dc}10;border:1px solid {dc}4d;'
             f'padding:2px 6px;border-radius:4px;font-weight:500;font-size:12px;'
             f"font-family:'IBM Plex Mono',monospace;margin-left:9px;"
-            f'font-variant-numeric:tabular-nums">{sign}{delta:.1f}</span>'
+            f'font-variant-numeric:tabular-nums" '
+            f'title="Δ force devise {delta:+.2f} — {rel} au {side}">'
+            f"{sign}{delta:.1f}</span>"
         )
     else:
         dh = (
             '<span style="color:#91a4bf;margin-left:9px;font-size:11.5px;'
-            "font-family:'IBM Plex Mono',monospace\">n/a</span>"
+            "font-family:'IBM Plex Mono',monospace\" "
+            'title="Δ force devise non disponible pour cet instrument">n/a</span>'
         )
     return f'<div style="display:flex;align-items:center">{bars}{dh}</div>'
 
@@ -332,7 +344,7 @@ def kpi_html(df: pd.DataFrame) -> str:
         ("WATCHLIST", b_watch, "#91a4bf", ICON_CLOCK),
         ("LONG ACTIFS", longs, "#34d399", icon_arrow(True, 12)),
         ("SHORT ACTIFS", shorts, "#fb7185", icon_arrow(False, 12)),
-        ("FORCE MAX", max_mom, "#38bdf8", ICON_BOLT),
+        ("ADX 3/3", max_mom, "#38bdf8", ICON_BOLT),
     ]
     cards = "".join(
         f'<div class="kpi{"" if v else " kpi-dim"}" style="--acc:{c}">'
@@ -350,7 +362,7 @@ def table_html(df: pd.DataFrame, kz_now: str) -> str:
         '  <th style="width:132px">Fraîcheur</th>\n'
         "  <th>Actif</th>\n  <th>Signal</th>\n  <th>Biais daily</th>\n"
         "  <th>Zone</th>\n  <th style=\"width:140px\">Score /103</th>\n"
-        "  <th>ADR / ATR</th>\n  <th>Force</th>\n"
+        "  <th>ADR / ATR</th>\n  <th>Momentum / Δ</th>\n"
         "</tr></thead><tbody>\n"
     )
     for _, row in df.iterrows():

@@ -276,7 +276,9 @@ Score max réel = **103** (échelle affichée « /103 », pas /100), plage possi
 |---|---|
 | **Zone** | DISCOUNT = prix sous MO (00h00 NY) · PREMIUM = prix dessus · EXT HIGH/LOW = hors PDH/PDL |
 | **ADR / ATR** | Valeur + jauge de consommation du range (🟢 <40% · 🟡 40–70% · 🔴 >70%) |
-| **Force** | ■■■ = ADX H4·H1·M15 ≥ 25 alignés · chiffre = Strength Δ base/quote (n/a pour indices, métaux et crypto) |
+| **Momentum / Δ** | ■■■ = ADX H4·H1·M15 ≥ 25 alignés avec le signal · Δ = force devise base/quote, vert si favorable au signal, rouge si contraire (n/a indices, métaux et crypto) |
+
+Le biais daily est neutralisé si la structure D1 est cassée (BOS) ou si une majorité 3-2 contredit la HMA20 daily sur 3 bougies.
             """
         )
 

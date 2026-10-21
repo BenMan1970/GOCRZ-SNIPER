@@ -20,6 +20,8 @@ from .indicators import QuantEngine, is_valid_df, swing_points
 
 logger = logging.getLogger("bluestar_sniper")
 
+HMA_CONFLICT_LOOKBACK = 3
+
 
 def get_tf_trend(df: pd.DataFrame, tf_type: str) -> tuple[int, float, str]:
     if not is_valid_df(df, 50):
@@ -129,6 +131,62 @@ def compute_mtf_analysis(
     return alignment_pct, dominant, results
 
 
+def _structure_vote(
+    *,
+    hh: bool,
+    hl: bool,
+    lh: bool,
+    ll: bool,
+    current_price: float,
+    last_high: float,
+    last_low: float,
+) -> str:
+    if hh and hl:
+        return "BROKEN" if current_price < last_low else "BULLISH"
+    if lh and ll:
+        return "BROKEN" if current_price > last_high else "BEARISH"
+    return "NEUTRAL"
+
+
+def _hma_conflicts_with_weak_majority(
+    votes_bull: int,
+    votes_bear: int,
+    hma_direction: int,
+) -> bool:
+    if abs(votes_bull - votes_bear) != 1 or hma_direction == 0:
+        return False
+    if votes_bull > votes_bear:
+        return hma_direction < 0
+    return hma_direction > 0
+
+
+def _final_bias(
+    votes_bull: int,
+    votes_bear: int,
+    structure_broken: bool,
+    hma_direction: int,
+) -> tuple[str, str | None]:
+    if structure_broken:
+        return "NEUTRAL", "NEUTRAL (structure cassée)"
+    if _hma_conflicts_with_weak_majority(
+        votes_bull, votes_bear, hma_direction
+    ):
+        return "NEUTRAL", "NEUTRAL (conflit HMA20)"
+    if votes_bull > votes_bear:
+        bias = (
+            "STRONG BULLISH" if votes_bull >= 5
+            else ("BULLISH" if votes_bull >= 3 else "NEUTRAL")
+        )
+    elif votes_bear > votes_bull:
+        bias = (
+            "STRONG BEARISH" if votes_bear >= 5
+            else ("BEARISH" if votes_bear >= 3 else "NEUTRAL")
+        )
+    else:
+        bias = "NEUTRAL"
+    return bias, None
+
+
 def get_daily_bias_v2(
     df_d: pd.DataFrame,
     current_price: float | None,
@@ -151,18 +209,27 @@ def get_daily_bias_v2(
     _, sl_idx = swing_points(low)
 
     struct_vote = "NEUTRAL"
+    structure_broken = False
     if len(sh_idx) >= 2 and len(sl_idx) >= 2:
         hh = high.iloc[sh_idx[-1]] > high.iloc[sh_idx[-2]]
         hl = low.iloc[sl_idx[-1]] > low.iloc[sl_idx[-2]]
         lh = high.iloc[sh_idx[-1]] < high.iloc[sh_idx[-2]]
         ll = low.iloc[sl_idx[-1]] < low.iloc[sl_idx[-2]]
-        if hh and hl:
-            struct_vote = "BULLISH"
+        struct_vote = _structure_vote(
+            hh=bool(hh),
+            hl=bool(hl),
+            lh=bool(lh),
+            ll=bool(ll),
+            current_price=cur,
+            last_high=float(high.iloc[sh_idx[-1]]),
+            last_low=float(low.iloc[sl_idx[-1]]),
+        )
+        structure_broken = struct_vote == "BROKEN"
+        if struct_vote == "BULLISH":
             votes_bull += 2
-        elif lh and ll:
-            struct_vote = "BEARISH"
+        elif struct_vote == "BEARISH":
             votes_bear += 2
-    detail["Structure"] = struct_vote
+    detail["Structure"] = "NEUTRAL (BOS)" if structure_broken else struct_vote
 
     ema50_series = close.ewm(span=50, adjust=False).mean()
     ema21 = close.ewm(span=21, adjust=False).mean().iloc[-1]
@@ -248,20 +315,28 @@ def get_daily_bias_v2(
         logger.warning("get_daily_bias_v2 EMA50 Slope error: %s", exc)
         detail["EMA50 Slope"] = "NEUTRAL"
 
-    detail["Votes"] = f"{votes_bull}B / {votes_bear}S"
+    hma_direction = 0
+    hma_label = "NEUTRAL"
+    try:
+        hma_series = QuantEngine.hma(close, 20).dropna()
+        if len(hma_series) >= 2:
+            ref_idx = max(0, len(hma_series) - 1 - HMA_CONFLICT_LOOKBACK)
+            hma_direction = (
+                1
+                if float(hma_series.iloc[-1]) > float(hma_series.iloc[ref_idx])
+                else -1
+            )
+            hma_label = "BULLISH" if hma_direction > 0 else "BEARISH"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("get_daily_bias_v2 HMA20 error: %s", exc)
+    detail["HMA20"] = hma_label
 
-    if votes_bull > votes_bear:
-        bias = (
-            "STRONG BULLISH" if votes_bull >= 5
-            else ("BULLISH" if votes_bull >= 3 else "NEUTRAL")
-        )
-    elif votes_bear > votes_bull:
-        bias = (
-            "STRONG BEARISH" if votes_bear >= 5
-            else ("BEARISH" if votes_bear >= 3 else "NEUTRAL")
-        )
-    else:
-        bias = "NEUTRAL"
+    bias, guard_label = _final_bias(
+        votes_bull, votes_bear, structure_broken, hma_direction
+    )
+    if guard_label is not None:
+        detail["Guard"] = guard_label
+    detail["Votes"] = f"{votes_bull}B / {votes_bear}S"
 
     return bias, detail
 
