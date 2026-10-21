@@ -11,9 +11,9 @@ import pandas as pd
 from ..config import DISPLAY_NAMES, GRADE_ORDER
 
 KZ_STYLE = {
-    "London": ("LONDON", "#7db7ff"),
-    "NY AM": ("NEW YORK AM", "#b7a4ff"),
-    "Asia": ("ASIA", "#5eead4"),
+    "London": ("LONDON", "#4f8dff"),
+    "NY AM": ("NEW YORK AM", "#8ab8ff"),
+    "Asia": ("ASIA", "#38bdf8"),
 }
 
 
@@ -22,43 +22,51 @@ def killzone_badge(kz: str) -> str:
 
 
 def killzone_color(kz: str) -> str:
-    return KZ_STYLE.get(kz, ("", "#a7b6d4"))[1]
+    return KZ_STYLE.get(kz, ("", "#91a4bf"))[1]
 
 
 def icon_arrow(up: bool, size: int = 12) -> str:
-    d = "M7 2.4 11.7 9.6H2.3z" if up else "M7 11.6 2.3 4.4h9.4z"
+    d = "M7 12V2.4M3.3 6.1 7 2.4l3.7 3.7" if up else "M7 2v9.6M3.3 7.9 7 11.6l3.7-3.7"
     return (
-        f'<svg width="{size}" height="{size}" viewBox="0 0 14 14" '
-        f'style="vertical-align:-1px"><path d="{d}" fill="currentColor"/></svg>'
+        f'<svg width="{size}" height="{size}" viewBox="0 0 14 14" fill="none" '
+        f'style="vertical-align:-2px"><path d="{d}" stroke="currentColor" '
+        f'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>'
     )
 
 
 ICON_BOLT = (
-    '<svg width="11" height="11" viewBox="0 0 14 14" style="vertical-align:-1px">'
-    '<path d="M8.1 1 3.2 8.1h2.9L5.4 13l5.4-7.4H7.4L8.1 1z" fill="currentColor"/></svg>'
+    '<svg width="12" height="12" viewBox="0 0 14 14" fill="none" '
+    'style="vertical-align:-2px">'
+    '<path d="M7.8 1.6 3.4 7.9h2.8L6.1 12.4l4.7-6.6H7.9l-.1-4.2z" '
+    'stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>'
 )
 ICON_CLOCK = (
-    '<svg width="11" height="11" viewBox="0 0 14 14" fill="none" style="vertical-align:-1px">'
-    '<circle cx="7" cy="7" r="5.1" stroke="currentColor" stroke-width="1.25"/>'
-    '<path d="M7 4.3V7.2l1.9 1.2" stroke="currentColor" stroke-width="1.25" '
-    'stroke-linecap="round"/></svg>'
+    '<svg width="12" height="12" viewBox="0 0 14 14" fill="none" '
+    'style="vertical-align:-2px">'
+    '<circle cx="7" cy="7" r="5.2" stroke="currentColor" stroke-width="1.25"/>'
+    '<path d="M7 4.2V7.2l2 1.2" stroke="currentColor" stroke-width="1.25" '
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>'
 )
 ICON_MOON = (
-    '<svg width="11" height="11" viewBox="0 0 14 14" style="vertical-align:-1px">'
-    '<path d="M9.5 9A4.3 4.3 0 0 1 5.2 4.7c0-.8.2-1.6.6-2.2A5 5 0 1 0 11.7 8.4c-.6.4-1.4.6-2.2.6z" '
-    'fill="currentColor"/></svg>'
+    '<svg width="12" height="12" viewBox="0 0 14 14" fill="none" '
+    'style="vertical-align:-2px">'
+    '<path d="M11.1 8.6A4.7 4.7 0 0 1 5.4 2.9 4.7 4.7 0 1 0 11.1 8.6z" '
+    'stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>'
 )
 ICON_ALERT = (
-    '<svg width="11" height="11" viewBox="0 0 14 14" fill="none" style="vertical-align:-1px">'
-    '<path d="M7 2 12.4 11.4H1.6L7 2z" stroke="currentColor" stroke-width="1.15"/>'
+    '<svg width="12" height="12" viewBox="0 0 14 14" fill="none" '
+    'style="vertical-align:-2px">'
+    '<path d="M7 2.1 12.4 11.4H1.6L7 2.1z" stroke="currentColor" stroke-width="1.15" '
+    'stroke-linejoin="round"/>'
     '<path d="M7 5.6v2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'
-    '<circle cx="7" cy="10" r=".72" fill="currentColor"/></svg>'
+    '<circle cx="7" cy="10" r=".7" fill="currentColor"/></svg>'
 )
 ICON_TARGET = (
-    '<svg width="13" height="13" viewBox="0 0 16 16" fill="none">'
-    '<circle cx="8" cy="8" r="6.2" stroke="currentColor" stroke-width="1.2" opacity=".45"/>'
-    '<circle cx="8" cy="8" r="2.6" stroke="currentColor" stroke-width="1.2"/>'
-    '<circle cx="8" cy="8" r="1" fill="currentColor"/></svg>'
+    '<svg width="14" height="14" viewBox="0 0 16 16" fill="none">'
+    '<circle cx="8" cy="8" r="5.4" stroke="currentColor" stroke-width="1.2"/>'
+    '<path d="M8 1.2v2.2M8 12.6v2.2M1.2 8h2.2M12.6 8h2.2" '
+    'stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>'
+    '<circle cx="8" cy="8" r="1.1" fill="currentColor"/></svg>'
 )
 
 
@@ -67,65 +75,63 @@ def _html(s: str) -> str:
 
 
 GRADE_STYLE = {
-    "A+": {"color": "#d6ccff", "line": "#b7a4ff", "bg": "rgba(183,164,255,.10)", "label": "A+"},
-    "A":  {"color": "#b9dbff", "line": "#7db7ff", "bg": "rgba(125,183,255,.08)", "label": "A"},
-    "B+": {"color": "#b8f5ea", "line": "#5eead4", "bg": "rgba(94,234,212,.055)", "label": "B+"},
-    "B":  {"color": "#c3cfe6", "line": "#8496b8", "bg": "transparent", "label": "B"},
-    "C":  {"color": "#aebbd6", "line": "#5d6a92", "bg": "transparent", "label": "C"},
+    "A+": {"color": "#f5c451", "line": "#b78b2e", "bg": "rgba(245,196,81,.065)", "label": "A+"},
+    "A":  {"color": "#8ab8ff", "line": "#4f8dff", "bg": "rgba(79,141,255,.055)", "label": "A"},
+    "B+": {"color": "#67e8f9", "line": "#38bdf8", "bg": "rgba(56,189,248,.045)", "label": "B+"},
+    "B":  {"color": "#c3d0e4", "line": "#6f84a3", "bg": "transparent", "label": "B"},
+    "C":  {"color": "#93a6c2", "line": "#4b5f7c", "bg": "transparent", "label": "C"},
 }
 
 BIAS_MAP = {
-    "STRONG BULLISH": ("Strong bull", "#5eead4", 2, True),
-    "BULLISH":        ("Bull",        "#a9f3e6", 1, True),
-    "STRONG BEARISH": ("Strong bear", "#f7a6cf", 2, False),
-    "BEARISH":        ("Bear",        "#f9c3de", 1, False),
+    "STRONG BULLISH": ("Strong bull", "#34d399", 2, True),
+    "BULLISH":        ("Bull",        "#6ee7b7", 1, True),
+    "STRONG BEARISH": ("Strong bear", "#fb7185", 2, False),
+    "BEARISH":        ("Bear",        "#fda4af", 1, False),
 }
 
 ZONE_MAP = {
-    "DISCOUNT":  ("#8ec5ff", "rgba(125,183,255,.14)", "rgba(125,183,255,.55)"),
-    "PREMIUM":   ("#f9b8dc", "rgba(247,166,207,.14)", "rgba(247,166,207,.55)"),
-    "EXT HIGH":  ("#f78ec4", "rgba(247,142,196,.18)", "rgba(247,142,196,.7)"),
-    "EXT LOW":   ("#7ff0dc", "rgba(94,234,212,.16)",  "rgba(94,234,212,.7)"),
-    "EQUILIBRE": ("#cbd6ea", "rgba(167,182,212,.14)", "rgba(167,182,212,.45)"),
+    "DISCOUNT":  ("#8ab8ff", "rgba(79,141,255,.12)",  "rgba(79,141,255,.48)"),
+    "PREMIUM":   ("#fda4af", "rgba(251,113,133,.12)", "rgba(251,113,133,.45)"),
+    "EXT HIGH":  ("#fb7185", "rgba(251,113,133,.15)", "rgba(251,113,133,.6)"),
+    "EXT LOW":   ("#34d399", "rgba(52,211,153,.13)",  "rgba(52,211,153,.55)"),
+    "EQUILIBRE": ("#c3d0e4", "rgba(145,164,191,.12)", "rgba(145,164,191,.4)"),
 }
 
 
 def fresh_cell(fresh_str: str, is_fresh: bool) -> str:
     txt = html.escape(fresh_str.replace("⚡", "").replace("⏳", "").strip())
-    col = "#5eead4" if is_fresh else "#a7b6d4"
+    col = "#34d399" if is_fresh else "#91a4bf"
     ico = ICON_BOLT if is_fresh else ICON_CLOCK
     dot = (
-        f'<span class="bs-dot" style="width:5px;height:5px;border-radius:50%;'
-        f'background:{col};box-shadow:0 0 0 2px {col}22"></span>' if is_fresh else ""
+        f'<span class="bs-dot" style="width:4px;height:4px;border-radius:50%;'
+        f'background:{col}"></span>' if is_fresh else ""
     )
-    bg = "linear-gradient(180deg,rgba(94,234,212,.18),rgba(94,234,212,.1))" if is_fresh \
-        else "linear-gradient(180deg,rgba(167,182,212,.13),rgba(167,182,212,.07))"
-    bd = "rgba(94,234,212,.55)" if is_fresh else "rgba(167,182,212,.34)"
+    bg = "rgba(52,211,153,.09)" if is_fresh else "rgba(145,164,191,.08)"
+    bd = "rgba(52,211,153,.38)" if is_fresh else "rgba(145,164,191,.26)"
     return (
-        f'<span style="display:inline-flex;align-items:center;gap:7px;color:{col};'
-        f'background:{bg};border:1px solid {bd};padding:5px 11px;border-radius:999px;'
-        f"font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;"
-        f'letter-spacing:-.01em;white-space:nowrap;box-shadow:inset 0 1px 0 rgba(255,255,255,.05)">'
-        f'{dot}<span style="display:inline-flex">{ico}</span>{txt}</span>'
+        f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
+        f'background:{bg};border:1px solid {bd};padding:4px 9px;border-radius:4px;'
+        f"font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:500;"
+        f'white-space:nowrap">{dot}<span style="display:inline-flex">{ico}</span>{txt}</span>'
     )
 
 
 def sig_cell(sig: str, is_bull: bool) -> str:
     expired = "expiré" in sig
-    col = ("#5eead4" if is_bull else "#f7a6cf") if not expired else "#a7b6d4"
+    col = ("#34d399" if is_bull else "#fb7185") if not expired else "#91a4bf"
     word = "LONG" if is_bull else "SHORT"
     if expired:
         return (
-            f'<span style="display:inline-flex;align-items:center;gap:7px;color:{col};'
-            f'font-size:12px;letter-spacing:.12em;font-weight:700">'
-            f'<span style="display:inline-flex;opacity:.8">{icon_arrow(is_bull, 10)}</span>'
+            f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
+            f'font-size:11.5px;letter-spacing:.1em;font-weight:600">'
+            f'<span style="display:inline-flex;opacity:.75">{icon_arrow(is_bull, 11)}</span>'
             f'{word} · EXPIRÉ</span>'
         )
     return (
-        f'<span style="display:inline-flex;align-items:center;gap:8px;color:{col};'
-        f'background:linear-gradient(180deg,{col}2e,{col}18);border:1px solid {col}8c;'
-        f'padding:6px 13px 6px 11px;border-radius:10px;font-size:14.5px;font-weight:800;'
-        f'letter-spacing:.1em;box-shadow:inset 0 1px 0 rgba(255,255,255,.06)">'
+        f'<span style="display:inline-flex;align-items:center;gap:7px;color:{col};'
+        f'background:{col}12;border:1px solid {col}66;'
+        f'padding:5px 10px 5px 9px;border-radius:5px;font-size:13.5px;font-weight:600;'
+        f'letter-spacing:.08em">'
         f'<span style="display:inline-flex">{icon_arrow(is_bull, 12)}</span>{word}</span>'
     )
 
@@ -133,17 +139,17 @@ def sig_cell(sig: str, is_bull: bool) -> str:
 def bias_cell(b: str) -> str:
     if b not in BIAS_MAP:
         return (
-            '<span style="color:#a7b6d4;font-size:14px;letter-spacing:.04em">'
+            '<span style="color:#91a4bf;font-size:13px;letter-spacing:.02em">'
             "— Neutral</span>"
         )
     label, col, strength, up = BIAS_MAP[b]
     arrows = "".join(
-        f'<span style="display:inline-flex">{icon_arrow(up, 10)}</span>'
+        f'<span style="display:inline-flex">{icon_arrow(up, 9)}</span>'
         for _ in range(strength)
     )
     return (
-        f'<span style="display:inline-flex;align-items:center;gap:2px;color:{col};'
-        f'font-size:14.5px;font-weight:700;letter-spacing:.01em">'
+        f'<span style="display:inline-flex;align-items:center;gap:1px;color:{col};'
+        f'font-size:13.5px;font-weight:600;letter-spacing:.01em">'
         f'{arrows}<span style="margin-left:5px">{html.escape(label)}</span></span>'
     )
 
@@ -151,115 +157,115 @@ def bias_cell(b: str) -> str:
 def zone_cell(z: str, mn_bonus: bool) -> str:
     col, bg, bd = ZONE_MAP.get(z, ZONE_MAP["EQUILIBRE"])
     moon = (
-        f'<span style="color:#d6ccff;display:inline-flex;margin-left:7px" '
+        f'<span style="color:#f5c451;display:inline-flex;margin-left:6px" '
         f'title="Confluence midnight open">{ICON_MOON}</span>' if mn_bonus else ""
     )
     return (
         f'<span style="display:inline-flex;align-items:center">'
         f'<span style="color:{col};background:{bg};border:1px solid {bd};'
-        f'padding:5px 12px;border-radius:8px;font-size:11.5px;font-weight:800;'
-        f'letter-spacing:.12em;white-space:nowrap;box-shadow:inset 0 1px 0 rgba(255,255,255,.045)">'
-        f'{html.escape(z)}</span>{moon}</span>'
+        f'padding:4px 8px;border-radius:4px;font-size:10.5px;font-weight:600;'
+        f'letter-spacing:.1em;white-space:nowrap">{html.escape(z)}</span>{moon}</span>'
     )
 
 
 def score_bar(score: int) -> str:
     if score >= 85:
         grad, col = (
-            "linear-gradient(90deg,#7db7ff,#b7a4ff 55%,#f7a6cf)",
-            "#ece6ff",
+            "linear-gradient(90deg,#b78b2e,#f5c451)",
+            "#f5c451",
         )
     elif score >= 70:
         grad, col = (
-            "linear-gradient(90deg,#5eead4,#7db7ff)",
-            "#dcecff",
+            "linear-gradient(90deg,#2457d6,#4f8dff)",
+            "#8ab8ff",
         )
     elif score >= 55:
         grad, col = (
-            "linear-gradient(90deg,#3f7fa0,#5eead4)", "#d9fbf5",
+            "linear-gradient(90deg,#0e7490,#38bdf8)",
+            "#67e8f9",
         )
     elif score >= 40:
         grad, col = (
-            "linear-gradient(90deg,#5d6a92,#a7b6d4)", "#e1e7f5",
+            "linear-gradient(90deg,#3a4d68,#6f84a3)",
+            "#c3d0e4",
         )
     else:
         grad, col = (
-            "linear-gradient(90deg,#334266,#8496b8)", "#c3cfe6",
+            "linear-gradient(90deg,#26364e,#4b5f7c)",
+            "#93a6c2",
         )
     width = max(3, min(score, 103) / 103 * 100) if score >= 0 else 3
     return (
-        f'<div style="display:flex;align-items:center;gap:12px">'
-        f'<span style="color:{col};font-weight:600;font-size:23px;'
+        f'<div style="display:flex;align-items:center;gap:10px">'
+        f'<span style="color:{col};font-weight:500;font-size:21px;'
         f"font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;"
-        f'letter-spacing:-.04em;min-width:42px;text-align:right">{score}</span>'
-        f'<div style="width:84px;height:7px;background:rgba(54,82,127,.55);'
-        f'border-radius:4px;overflow:hidden;box-shadow:inset 0 1px 2px rgba(0,0,0,.35)">'
-        f'<div style="width:{width}%;height:100%;background:{grad};'
-        f'border-radius:4px;box-shadow:0 0 10px -3px rgba(125,183,255,.55)"></div></div></div>'
+        f'letter-spacing:-.04em;min-width:38px;text-align:right">{score}</span>'
+        f'<div style="width:74px;height:5px;background:#16253b;'
+        f'border-radius:2px;overflow:hidden">'
+        f'<div style="width:{width}%;height:100%;background:{grad};border-radius:2px"></div>'
+        f'</div></div>'
     )
 
 
 def adr_cell(v: float | None, label: str = "ADR", consumed: float | None = None) -> str:
     if v is None:
-        return '<span style="color:#a7b6d4">—</span>'
+        return '<span style="color:#91a4bf">—</span>'
     formatted = f"{v:.5f}" if v < 1.0 else f"{v:.2f}"
-    tag_color = "#7db7ff" if label == "ADR" else "#c4b5fd"
+    tag_color = "#8ab8ff" if label == "ADR" else "#67e8f9"
     head = (
-        f'<div style="display:flex;align-items:baseline;gap:8px">'
-        f'<span style="color:{tag_color};font-size:10px;font-weight:800;letter-spacing:.13em;'
-        f'background:{tag_color}14;border:1px solid {tag_color}45;padding:2px 7px;'
-        f'border-radius:6px">{html.escape(label)}</span>'
-        f'<span style="color:var(--ink);font-weight:600;'
+        f'<div style="display:flex;align-items:baseline;gap:7px">'
+        f'<span style="color:{tag_color};font-size:9.5px;font-weight:600;letter-spacing:.11em;'
+        f'background:{tag_color}12;border:1px solid {tag_color}3d;padding:1px 5px;'
+        f'border-radius:3px">{html.escape(label)}</span>'
+        f'<span style="color:var(--ink);font-weight:500;'
         f"font-family:'IBM Plex Mono',monospace;"
-        f'font-size:15.5px;font-variant-numeric:tabular-nums;letter-spacing:-.02em">'
+        f'font-size:14.5px;font-variant-numeric:tabular-nums;letter-spacing:-.02em">'
         f'{formatted}</span></div>'
     )
     if consumed is None or (isinstance(consumed, float) and np.isnan(consumed)):
         return head
     consumed = float(consumed)
     if consumed < 40:
-        c = "#5eead4"
+        c = "#34d399"
     elif consumed < 70:
-        c = "#f7c66b"
+        c = "#f5c451"
     else:
-        c = "#f7a6cf"
+        c = "#fb7185"
     fill = int(min(max(consumed, 0), 100))
     gauge = (
-        f'<div style="display:flex;align-items:center;gap:8px;margin-top:7px">'
-        f'<div style="width:66px;height:5px;background:rgba(54,82,127,.55);'
-        f'border-radius:3px;overflow:hidden;box-shadow:inset 0 1px 2px rgba(0,0,0,.35)">'
-        f'<div style="width:{fill}%;height:100%;background:{c};border-radius:3px">'
+        f'<div style="display:flex;align-items:center;gap:7px;margin-top:6px">'
+        f'<div style="width:58px;height:4px;background:#16253b;'
+        f'border-radius:2px;overflow:hidden">'
+        f'<div style="width:{fill}%;height:100%;background:{c};border-radius:2px">'
         f'</div></div>'
-        f"<span style=\"color:{c};font-size:11.5px;font-family:'IBM Plex Mono',monospace;"
-        f'font-weight:600;font-variant-numeric:tabular-nums">{consumed:.0f}%</span></div>'
+        f"<span style=\"color:{c};font-size:10.5px;font-family:'IBM Plex Mono',monospace;"
+        f'font-weight:500;font-variant-numeric:tabular-nums">{consumed:.0f}%</span></div>'
     )
     return f"<div>{head}{gauge}</div>"
 
 
 def force_cell(momentum_score: int, delta: float | None, is_bull: bool) -> str:
-    col = "#5eead4" if is_bull else "#f7a6cf"
+    col = "#34d399" if is_bull else "#fb7185"
     seg = "".join(
         (
-            f'<div style="width:17px;height:10px;border-radius:3px;background:{col};'
-            f'box-shadow:0 0 8px -4px {col}"></div>'
+            f'<div style="width:14px;height:8px;border-radius:2px;background:{col}"></div>'
         ) if i < momentum_score else
-        '<div style="width:17px;height:10px;border-radius:3px;background:rgba(54,82,127,.55);'
-        'box-shadow:inset 0 1px 2px rgba(0,0,0,.35)"></div>'
+        '<div style="width:14px;height:8px;border-radius:2px;background:#16253b"></div>'
         for i in range(3)
     )
-    bars = f'<div style="display:flex;gap:5px;align-items:center">{seg}</div>'
+    bars = f'<div style="display:flex;gap:4px;align-items:center">{seg}</div>'
     if delta is not None:
-        dc = "#5eead4" if delta >= 1.5 else "#f7a6cf" if delta <= -1.5 else "#a7b6d4"
+        dc = "#34d399" if delta >= 1.5 else "#fb7185" if delta <= -1.5 else "#91a4bf"
         sign = "+" if delta > 0 else ""
         dh = (
-            f'<span style="color:{dc};background:{dc}18;border:1px solid {dc}66;'
-            f'padding:3px 8px;border-radius:7px;font-weight:600;font-size:13px;'
-            f"font-family:'IBM Plex Mono',monospace;margin-left:11px;"
+            f'<span style="color:{dc};background:{dc}10;border:1px solid {dc}4d;'
+            f'padding:2px 6px;border-radius:4px;font-weight:500;font-size:12px;'
+            f"font-family:'IBM Plex Mono',monospace;margin-left:9px;"
             f'font-variant-numeric:tabular-nums">{sign}{delta:.1f}</span>'
         )
     else:
         dh = (
-            '<span style="color:#a7b6d4;margin-left:11px;font-size:12px;'
+            '<span style="color:#91a4bf;margin-left:9px;font-size:11.5px;'
             "font-family:'IBM Plex Mono',monospace\">n/a</span>"
         )
     return f'<div style="display:flex;align-items:center">{bars}{dh}</div>'
@@ -267,41 +273,40 @@ def force_cell(momentum_score: int, delta: float | None, is_bull: bool) -> str:
 
 TABLE_CSS = """
 <style>
-.sc-wrap{overflow-x:auto;border:1px solid #28406c;border-radius:19px;
-  background:linear-gradient(180deg,#0b1934,#081228);
-  box-shadow:0 34px 80px -52px #000,inset 0 1px 0 rgba(255,255,255,.045)}
+.sc-wrap{overflow-x:auto;border:1px solid #1d2e47;border-radius:12px;
+  background:#0a1322;
+  box-shadow:0 30px 70px -52px #000,inset 0 1px 0 rgba(255,255,255,.035)}
 .sc-tbl{width:100%;border-collapse:separate;border-spacing:0;
-  font-family:'Manrope',sans-serif;font-size:15px;font-weight:500;color:var(--ink)}
+  font-family:'IBM Plex Sans',sans-serif;font-size:14px;font-weight:400;color:var(--ink)}
 .sc-tbl thead th{
-  padding:15px 20px;text-align:left;white-space:nowrap;
-  color:#c3d3ee;font-size:10.5px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;
-  background:#0e1f3f;border-bottom:1px solid #2f4b7b;
+  padding:12px 18px;text-align:left;white-space:nowrap;
+  color:#91a4bf;font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+  background:#0d192b;border-bottom:1px solid #243854;
   position:sticky;top:0;z-index:2}
-.sc-tbl td{padding:16px 20px;border-bottom:1px solid rgba(54,82,127,.42);vertical-align:middle}
-.sc-tbl th+th,.sc-tbl td+td{border-left:1px solid rgba(54,82,127,.18)}
-.sc-tbl tbody tr:nth-child(even) td{background:rgba(125,183,255,.032)}
-.sc-tbl tbody tr{transition:background .14s ease}
-.sc-tbl tbody tr:hover td{background:rgba(125,183,255,.085)}
+.sc-tbl td{padding:13px 18px;border-bottom:1px solid rgba(36,56,84,.6);vertical-align:middle}
+.sc-tbl tbody tr:nth-child(even) td{background:rgba(79,141,255,.022)}
+.sc-tbl tbody tr{transition:background .13s ease}
+.sc-tbl tbody tr:hover td{background:rgba(79,141,255,.06)}
 .sc-tbl tbody tr:last-child td{border-bottom:none}
-.sc-tbl td:first-child{position:relative;padding-left:22px}
-.sc-tbl td:first-child::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;
-  border-radius:0 3px 3px 0}
-.rail-bull td:first-child::before{background:linear-gradient(180deg,#5eead4,rgba(94,234,212,.12))}
-.rail-bear td:first-child::before{background:linear-gradient(180deg,#f7a6cf,rgba(247,166,207,.12))}
-.ticker{font-family:'IBM Plex Mono',monospace;font-size:19.5px;font-weight:600;color:var(--ink);
-  white-space:nowrap;letter-spacing:-.035em;font-variant-numeric:tabular-nums}
-.stale .ticker{color:#b9c9e6}
-.grade-pill{display:inline-block;padding:3px 9px;border-radius:7px;font-size:12px;font-weight:700;
-  letter-spacing:.02em;margin-left:11px;vertical-align:middle;
-  font-family:'IBM Plex Mono',monospace;box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
-.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;
-  font-size:10.5px;font-weight:800;letter-spacing:.12em;margin-left:9px;vertical-align:middle}
+.sc-tbl td:first-child{position:relative;padding-left:18px}
+.sc-tbl td:first-child::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;
+  border-radius:0 2px 2px 0}
+.rail-bull td:first-child::before{background:#34d399}
+.rail-bear td:first-child::before{background:#fb7185}
+.ticker{font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:500;color:var(--ink);
+  white-space:nowrap;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.stale .ticker{color:#c3d0e4}
+.grade-pill{display:inline-block;padding:2px 6px;border-radius:3px;font-size:10.5px;font-weight:600;
+  letter-spacing:.02em;margin-left:9px;vertical-align:middle;
+  font-family:'IBM Plex Mono',monospace}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:3px;
+  font-size:9.5px;font-weight:600;letter-spacing:.1em;margin-left:8px;vertical-align:middle}
 @media (max-width:900px){
-  .sc-tbl{font-size:14px}
-  .sc-tbl thead th{padding:12px 14px}
-  .sc-tbl td{padding:13px 14px}
-  .sc-tbl td:first-child{padding-left:16px}
-  .ticker{font-size:17.5px}
+  .sc-tbl{font-size:13.5px}
+  .sc-tbl thead th{padding:11px 13px}
+  .sc-tbl td{padding:12px 13px}
+  .sc-tbl td:first-child{padding-left:14px}
+  .ticker{font-size:16.5px}
 }
 </style>
 """
@@ -322,12 +327,12 @@ def kpi_html(df: pd.DataFrame) -> str:
     max_mom = len(df[df.get("Momentum", 0) == 3]) if "Momentum" in df.columns else 0
 
     kpis = [
-        ("A+ PREMIUM", a_plus, "#b7a4ff", ICON_TARGET),
-        ("GRADE A", a_grade, "#7db7ff", ICON_TARGET),
-        ("WATCHLIST", b_watch, "#c3cfe6", ICON_CLOCK),
-        ("LONG ACTIFS", longs, "#5eead4", icon_arrow(True, 12)),
-        ("SHORT ACTIFS", shorts, "#f7a6cf", icon_arrow(False, 12)),
-        ("FORCE MAX", max_mom, "#f7c66b", ICON_BOLT),
+        ("A+ PREMIUM", a_plus, "#f5c451", ICON_TARGET),
+        ("GRADE A", a_grade, "#4f8dff", ICON_TARGET),
+        ("WATCHLIST", b_watch, "#91a4bf", ICON_CLOCK),
+        ("LONG ACTIFS", longs, "#34d399", icon_arrow(True, 12)),
+        ("SHORT ACTIFS", shorts, "#fb7185", icon_arrow(False, 12)),
+        ("FORCE MAX", max_mom, "#38bdf8", ICON_BOLT),
     ]
     cards = "".join(
         f'<div class="kpi{"" if v else " kpi-dim"}" style="--acc:{c}">'
@@ -369,8 +374,8 @@ def table_html(df: pd.DataFrame, kz_now: str) -> str:
         mn_bonus = bool(row.get("Midnight Bonus", False))
 
         align_tag = (
-            f'<span class="chip" style="background:rgba(247,166,207,.14);'
-            f'border:1px solid rgba(247,166,207,.6);color:#f7a6cf">'
+            f'<span class="chip" style="background:rgba(251,113,133,.12);'
+            f'border:1px solid rgba(251,113,133,.5);color:#fb7185">'
             f"{ICON_ALERT}COUNTER</span>" if alignment == "COUNTER" else ""
         )
 
@@ -387,7 +392,7 @@ def table_html(df: pd.DataFrame, kz_now: str) -> str:
         rail = ("rail-bull" if is_bull else "rail-bear") + ("" if fresh else " stale")
         row_style = f"background:{row_bg}"
         if fresh and grade == "A+":
-            row_style += ";box-shadow:inset 0 0 36px -16px rgba(183,164,255,.20)"
+            row_style += ";box-shadow:inset 0 0 36px -18px rgba(245,196,81,.18)"
 
         out.append(
             f'<tr class="{rail}" style="{row_style}">\n'
@@ -435,21 +440,21 @@ def footer_html(df: pd.DataFrame, elapsed: float, now: datetime, kz_now: str) ->
     kz_foot = (
         f'<span style="color:{killzone_color(kz_now)}">'
         f"killzone {killzone_badge(kz_now)} active</span>" if kz_now
-        else '<span style="color:#8496b8">hors killzone</span>'
+        else '<span style="color:#6f84a3">hors killzone</span>'
     )
     return _html(
         f"""
-    <div style="display:flex;align-items:center;justify-content:flex-end;gap:14px;
-                margin-top:14px;font-size:10.5px;letter-spacing:.1em;font-weight:600;
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:13px;
+                margin-top:12px;font-size:10px;letter-spacing:.09em;font-weight:500;
                 text-transform:uppercase;color:var(--muted)">
       <span>{len(df)} signal(s)</span>
-      <span style="color:#36527f">•</span>
-      <span style="font-family:'IBM Plex Mono',monospace;text-transform:none;letter-spacing:.02em">
+      <span style="color:#2c4667">•</span>
+      <span style="font-family:'IBM Plex Mono',monospace;text-transform:none;letter-spacing:.01em">
         {elapsed}s</span>
-      <span style="color:#36527f">•</span>
-      <span style="font-family:'IBM Plex Mono',monospace;text-transform:none;letter-spacing:.02em">
+      <span style="color:#2c4667">•</span>
+      <span style="font-family:'IBM Plex Mono',monospace;text-transform:none;letter-spacing:.01em">
         {now.strftime('%H:%M:%S')} UTC</span>
-      <span style="color:#36527f">•</span>
+      <span style="color:#2c4667">•</span>
       {kz_foot}
     </div>
     """

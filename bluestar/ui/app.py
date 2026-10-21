@@ -61,50 +61,44 @@ def _header_html(kz_now: str) -> str:
     if kz_now:
         kc = killzone_color(kz_now)
         kz_html = (
-            f'<span class="bs-badge" style="border-color:{kc}55;'
-            f'background:linear-gradient(90deg,{kc}1c,{kc}0a);color:{kc}">'
-            f'<span class="bs-dot" style="width:6px;height:6px;border-radius:50%;'
-            f'background:{kc};box-shadow:0 0 0 3px {kc}22"></span>'
-            f'<span style="font-size:10px;font-weight:800;letter-spacing:.16em;'
-            f'color:{kc}">{killzone_badge(kz_now)}</span></span>'
+            f'<span class="bs-badge" style="border-color:{kc}4d;'
+            f'background:{kc}0d;color:{kc}">'
+            f'<span class="bs-dot" style="width:5px;height:5px;border-radius:50%;'
+            f'background:{kc}"></span>'
+            f'<span style="font-size:9.5px;font-weight:600;letter-spacing:.14em;'
+            f'text-transform:uppercase;color:{kc}">{killzone_badge(kz_now)}</span></span>'
         )
     else:
         kz_html = (
             '<span class="bs-badge"><span class="bs-dot" '
-            'style="width:6px;height:6px;border-radius:50%;background:#8496b8"></span>'
+            'style="width:5px;height:5px;border-radius:50%;background:#6f84a3"></span>'
             'HORS KILLZONE</span>'
         )
     return _html(
         f"""
     <div class="bs-header">
       <div class="bs-brand">
-        <div style="position:relative;width:54px;height:54px;flex-shrink:0">
-          <svg viewBox="0 0 48 48" width="54" height="54" fill="none">
-            <defs>
-              <linearGradient id="bsg" x1="4" y1="4" x2="44" y2="44">
-                <stop offset="0%"   stop-color="#5eead4"/>
-                <stop offset="52%"  stop-color="#7db7ff"/>
-                <stop offset="100%" stop-color="#b7a4ff"/>
-              </linearGradient>
-            </defs>
-            <circle cx="24" cy="24" r="21" stroke="url(#bsg)" stroke-width="1.4" opacity=".5"/>
-            <circle cx="24" cy="24" r="13.5" stroke="url(#bsg)" stroke-width="1.5" opacity=".9"/>
-            <path d="M24 1.5v9M24 37.5v9M1.5 24h9M37.5 24h9"
-                  stroke="url(#bsg)" stroke-width="1.4" stroke-linecap="round" opacity=".7"/>
-            <circle cx="24" cy="24" r="3.8" fill="url(#bsg)"/>
+        <div style="width:52px;height:52px;flex-shrink:0;display:flex;align-items:center;
+             justify-content:center;border:1px solid #2c4667;border-radius:10px;
+             background:linear-gradient(180deg,#0d192b,#0a1322);
+             box-shadow:inset 0 1px 0 rgba(255,255,255,.04)">
+          <svg viewBox="0 0 48 48" width="40" height="40" fill="none">
+            <path d="M7 16V7h9M32 7h9v9M41 32v9h-9M16 41H7v-9"
+                  stroke="#4f8dff" stroke-width="1.4" stroke-linecap="square" opacity=".5"/>
+            <circle cx="24" cy="24" r="10.5" stroke="#4f8dff" stroke-width="1.2" opacity=".65"/>
+            <path d="M24 8.5v7M24 32.5v7M8.5 24h7M32.5 24h7"
+                  stroke="#8ab8ff" stroke-width="1.2" stroke-linecap="round"/>
+            <circle cx="24" cy="24" r="2.6" fill="#f5c451"/>
           </svg>
-          <div class="bs-pulse" style="position:absolute;inset:7px;border-radius:50%;
-               border:1px solid #7db7ff"></div>
         </div>
         <div>
-          <div class="bs-overline">Market intelligence · Multi-timeframe</div>
+          <div class="bs-overline">Tactical market scanner</div>
           <h1 class="bs-title">
             Bluestar <span class="bs-thin">Sniper</span>
-            <span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;
-                  font-weight:600;letter-spacing:.04em;color:var(--iris);
-                  background:rgba(183,164,255,.1);border:1px solid rgba(183,164,255,.32);
-                  padding:3px 8px;border-radius:7px;margin-left:9px;vertical-align:middle;
-                  box-shadow:inset 0 1px 0 rgba(255,255,255,.05)">{APP_VERSION}</span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;
+                  font-weight:500;letter-spacing:.04em;color:var(--blue-2);
+                  background:rgba(79,141,255,.07);border:1px solid #2c4667;
+                  padding:3px 7px;border-radius:4px;margin-left:9px;vertical-align:middle">{APP_VERSION}</span>
           </h1>
           <p class="bs-sub">
             <span>HMA 20 · M15</span>
@@ -113,13 +107,20 @@ def _header_html(kz_now: str) -> str:
             <span class="bs-sep">/</span>
             <span>Zones ICT</span>
             <span class="bs-sep">/</span>
-            <span>FVG &amp; Currency Strength</span>
+            <span>FVG &amp; force devise</span>
           </p>
         </div>
       </div>
       <div class="bs-badges">
         {kz_html}
-        <span class="bs-badge"><strong>Read-only</strong> · OANDA</span>
+        <span class="bs-badge">
+          <svg width="11" height="11" viewBox="0 0 14 14" fill="none">
+            <rect x="3" y="6.2" width="8" height="5.8" rx="1.1"
+                  stroke="currentColor" stroke-width="1.2"/>
+            <path d="M5 6V4.5a2 2 0 0 1 4 0V6" stroke="currentColor" stroke-width="1.2"/>
+          </svg>
+          <strong>Read-only</strong> OANDA
+        </span>
       </div>
     </div>
     <hr>
@@ -130,35 +131,30 @@ def _header_html(kz_now: str) -> str:
 def _idle_html(n_assets: int) -> str:
     return _html(
         f"""
-        <div style="max-width:800px;margin:0 auto;padding:60px 30px 54px;text-align:center;
-             border:1px solid rgba(125,183,255,.16);border-radius:22px;
-             background:radial-gradient(680px 300px at 50% 0%,rgba(125,183,255,.09),transparent 68%),
-                        linear-gradient(180deg,rgba(14,29,58,.66),rgba(8,18,38,.5));
-             box-shadow:inset 0 1px 0 rgba(255,255,255,.045),0 34px 80px -58px #000">
-          <div style="position:relative;width:84px;height:84px;margin:0 auto 26px">
-            <div class="bs-pulse" style="position:absolute;inset:0;border-radius:50%;
-                 border:1px solid #7db7ff"></div>
-            <svg viewBox="0 0 72 72" width="84" height="84" fill="none">
-              <defs><linearGradient id="bse" x1="8" y1="8" x2="64" y2="64">
-                <stop offset="0%" stop-color="#5eead4"/><stop offset="50%" stop-color="#7db7ff"/>
-                <stop offset="100%" stop-color="#b7a4ff"/></linearGradient></defs>
-              <circle cx="36" cy="36" r="30" stroke="url(#bse)" stroke-width="1.2" opacity=".4"/>
-              <circle cx="36" cy="36" r="18" stroke="url(#bse)" stroke-width="1.3" opacity=".75"/>
-              <path d="M36 2v12M36 58v12M2 36h12M58 36h12" stroke="url(#bse)"
-                    stroke-width="1.2" stroke-linecap="round" opacity=".6"/>
-              <circle cx="36" cy="36" r="4.5" fill="url(#bse)"/>
+        <div style="max-width:720px;margin:0 auto;padding:54px 30px 48px;text-align:center;
+             border:1px solid #1d2e47;border-radius:14px;
+             background:linear-gradient(180deg,#0c1729,#0a1322);
+             box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 30px 70px -56px #000">
+          <div style="width:64px;height:64px;margin:0 auto 22px;display:flex;align-items:center;
+               justify-content:center;border:1px solid #2c4667;border-radius:12px;
+               background:#0d192b">
+            <svg viewBox="0 0 48 48" width="38" height="38" fill="none">
+              <circle cx="24" cy="24" r="14" stroke="#4f8dff" stroke-width="1.2" opacity=".55"/>
+              <path d="M24 5v9M24 34v9M5 24h9M34 24h9"
+                    stroke="#8ab8ff" stroke-width="1.2" stroke-linecap="round"/>
+              <circle cx="24" cy="24" r="2.6" fill="#f5c451"/>
             </svg>
           </div>
-          <div class="bs-overline" style="margin-bottom:8px">Awaiting command</div>
-          <div style="font-size:23px;color:var(--ink);font-weight:700;letter-spacing:-.025em">
+          <div class="bs-overline" style="justify-content:center;margin-bottom:8px">Awaiting command</div>
+          <div style="font-size:22px;color:var(--ink);font-weight:600;letter-spacing:-.02em">
             Scanner en veille
           </div>
-          <div style="font-size:13.5px;color:var(--muted);margin-top:9px;letter-spacing:.02em">
+          <div style="font-size:13px;color:var(--muted);margin-top:8px;letter-spacing:.01em">
             {n_assets} instruments · 6 timeframes · setups HMA / ICT
           </div>
-          <div style="display:flex;justify-content:center;gap:8px;margin-top:22px;flex-wrap:wrap">
+          <div style="display:flex;justify-content:center;gap:7px;margin-top:22px;flex-wrap:wrap">
             <span class="bs-badge">Lecture seule</span>
-            <span class="bs-badge"><strong>OANDA</strong> · Practice</span>
+            <span class="bs-badge"><strong>OANDA</strong> Practice</span>
             <span class="bs-badge">Données multi-TF</span>
           </div>
         </div>
