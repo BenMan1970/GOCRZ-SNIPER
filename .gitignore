@@ -1,0 +1,29 @@
+# Secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+
+# Streamlit
+.streamlit/
+
+# Caches / logs / exports
+*.log
+*.csv
+*.parquet
+*.pkl
+*.pickle
+*.json.bak
+.DS_Store
+.idea/
+.vscode/
+*.swp
