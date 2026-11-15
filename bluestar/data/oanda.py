@@ -1,7 +1,8 @@
 """Read-only OANDA v20 candle client.
 
-Only GET /v3/instruments/{instrument}/candles is used. Sessions are reused per
-thread; parameters are explicit so we never depend on server defaults.
+Only GET /v3/instruments/{instrument}/candles is used. One HTTP session per
+worker thread, kept for the whole scan (connection reuse) and closed together
+by `OandaSource.close()`. Parameters are explicit: no dependence on server defaults.
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ def parse_candles(payload: object) -> pd.DataFrame:
         raise ValueError("Réponse inattendue")
     rows = [
         {
-            "time": pd.to_datetime(c["time"]),
+            "time": pd.to_datetime(c["time"], utc=True),
             "open": float(c["mid"]["o"]),
             "high": float(c["mid"]["h"]),
             "low": float(c["mid"]["l"]),
@@ -130,6 +131,8 @@ class OandaSource:
         self._max_retries = max_retries
         self._sleep = sleep
         self._local = threading.local()
+        self._sessions: list[requests.Session] = []
+        self._sessions_lock = threading.Lock()
 
     def _session(self) -> requests.Session:
         session = getattr(self._local, "session", None)
@@ -142,6 +145,8 @@ class OandaSource:
                 }
             )
             self._local.session = session
+            with self._sessions_lock:
+                self._sessions.append(session)
         return session
 
     def _delay(self, attempt: int, retry_after: str | None = None) -> float:
@@ -233,22 +238,9 @@ class OandaSource:
         return EMPTY_DF.copy(), last_error
 
     def close(self) -> None:
-        session = getattr(self._local, "session", None)
-        if session is not None:
+        """Ferme toutes les sessions ouvertes (tous threads confondus)."""
+        with self._sessions_lock:
+            sessions, self._sessions = self._sessions, []
+        for session in sessions:
             session.close()
-            self._local.session = None
-
-
-def fetch_oanda_data(
-    access_token: str,
-    environment: str,
-    instrument: str,
-    granularity: str,
-    count: int,
-) -> tuple[pd.DataFrame, str | None]:
-    """Compatibility entry point (one client per call, as in V16)."""
-    source = OandaSource(access_token, environment)
-    try:
-        return source.fetch(instrument, granularity, count)
-    finally:
-        source.close()
+        self._local = threading.local()

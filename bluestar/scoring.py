@@ -1,8 +1,57 @@
-"""Signal scoring. Weights/thresholds are frozen pending human validation."""
+"""Score /100 transparent : chaque composante est tracée et explicable.
+
+Composantes (poids dans config.SCORE_WEIGHTS) :
+Trigger HMA 30 · MTF 25 · Zone 15 · Biais daily 10 · Force devise 10 · ADX 10.
+Si la force devise est indisponible (métaux, indices), sa composante sort du
+dénominateur : le score est renormalisé, l'instrument n'est jamais pénalisé.
+Malus : ADR > 70 % consommé (-5) · signal contraire au biais daily (-20).
+"""
 
 from __future__ import annotations
 
-from .config import ADX_TREND_MIN, ADX_WEAK_MIN, GRADE_THRESHOLDS
+from dataclasses import dataclass, field
+
+from .config import (
+    ADR_MALUS,
+    ADR_MALUS_THRESHOLD,
+    ADX_POINTS,
+    BIAS_POINTS,
+    COUNTER_MALUS,
+    FORCE_TIERS,
+    GRADE_THRESHOLDS,
+    MTF_ALIGNED_FLOOR,
+    MTF_TIERS,
+    SCORE_WEIGHTS,
+    TRIGGER_TIERS,
+)
+
+ALIGNED = "ALIGNED"
+NEUTRAL = "NEUTRAL"
+COUNTER = "COUNTER"
+
+
+@dataclass(frozen=True)
+class ScoreResult:
+    score: int
+    grade: str
+    earned: dict[str, int] = field(default_factory=dict)
+    malus: dict[str, int] = field(default_factory=dict)
+    max_available: int = 100
+
+    def describe(self) -> str:
+        parts = [f"{k} {v}/{SCORE_WEIGHTS[k]}" for k, v in self.earned.items()]
+        if "Force" not in self.earned:
+            parts.append("Force n/a")
+        parts += [f"{k} {v}" for k, v in self.malus.items()]
+        scale = "" if self.max_available == 100 else f" · renormalisé /{self.max_available}"
+        return " · ".join(parts) + scale
+
+
+def _tier(value: float, tiers: tuple[tuple[float, int], ...]) -> int:
+    for threshold, points in tiers:
+        if value >= threshold:
+            return points
+    return 0
 
 
 def grade_for(score: int) -> str:
@@ -13,123 +62,57 @@ def grade_for(score: int) -> str:
 
 
 def compute_score(
-    flip_type: str | None,
+    *,
+    is_bull: bool,
     mins_ago: int | None,
     mtf_pct: int,
-    mtf_dominant: str,
-    zone_discount: bool,
-    zone_premium: bool,
-    in_bull_fvg: bool,
-    in_bear_fvg: bool,
-    fvg_near_bull: bool,
-    fvg_near_bear: bool,
-    adx_val: float,
-    pdi_val: float,
-    mdi_val: float,
-    atr_val: float,
-    atr_mean: float,
-    midnight_bonus: bool = False,
-    adr_consumed: float | None = None,
-    bias_alignment: str = "ALIGNED",
-) -> tuple[int, str, dict[str, int]]:
-    score = 0
-    score_detail: dict[str, int] = {}
+    mtf_aligned: bool,
+    zone_favorable: bool,
+    alignment: str,
+    bias_strong: bool,
+    strength_delta: float | None,
+    adx_strong_count: int,
+    adr_consumed: float | None,
+) -> ScoreResult:
+    earned: dict[str, int] = {}
 
-    if flip_type is not None and mins_ago is not None:
-        mins = mins_ago
-        if mins <= 15:
-            pts = 30
-        elif mins <= 30:
-            pts = 20
-        elif mins <= 45:
-            pts = 10
-        else:
-            pts = 0
+    # Trigger : fraîcheur du flip HMA. Une continuation (mins_ago=None) vaut 0.
+    if mins_ago is None:
+        earned["Trigger"] = 0
     else:
-        pts = 0
-    score += pts
-    score_detail["Trigger"] = pts
+        earned["Trigger"] = next((pts for lim, pts in TRIGGER_TIERS if mins_ago <= lim), 0)
 
-    signal_is_bull = flip_type == "BULL"
-    signal_is_bear = flip_type == "BEAR"
+    # MTF : n'est crédité que si le camp dominant est celui du signal.
+    if not mtf_aligned:
+        earned["MTF"] = 0
+    else:
+        earned["MTF"] = next((pts for lim, pts in MTF_TIERS if mtf_pct >= lim), MTF_ALIGNED_FLOOR)
 
-    mtf_aligned = (
-        (signal_is_bull and mtf_dominant == "Bullish")
-        or (signal_is_bear and mtf_dominant == "Bearish")
+    earned["Zone"] = SCORE_WEIGHTS["Zone"] if zone_favorable else 0
+
+    if alignment == ALIGNED:
+        earned["Bias"] = BIAS_POINTS["STRONG" if bias_strong else "NORMAL"]
+    else:
+        earned["Bias"] = 0
+
+    available = sum(SCORE_WEIGHTS.values())
+    if strength_delta is None:
+        available -= SCORE_WEIGHTS["Force"]
+    else:
+        favorable = strength_delta if is_bull else -strength_delta
+        earned["Force"] = _tier(favorable, FORCE_TIERS)
+
+    earned["ADX"] = ADX_POINTS[max(0, min(3, adx_strong_count))]
+
+    base = round(sum(earned.values()) / available * 100)
+    malus: dict[str, int] = {}
+    if adr_consumed is not None and adr_consumed > ADR_MALUS_THRESHOLD:
+        malus["ADR"] = -ADR_MALUS
+    if alignment == COUNTER:
+        malus["Contre-biais"] = -COUNTER_MALUS
+
+    score = max(0, min(100, base + sum(malus.values())))
+    return ScoreResult(
+        score=score, grade=grade_for(score), earned=earned, malus=malus,
+        max_available=available,
     )
-    if mtf_aligned:
-        if mtf_pct >= 80:
-            pts = 25
-        elif mtf_pct >= 65:
-            pts = 18
-        elif mtf_pct >= 50:
-            pts = 10
-        else:
-            pts = 5
-    else:
-        pts = 0
-    score += pts
-    score_detail["MTF"] = pts
-
-    if signal_is_bull:
-        pts = 15 if zone_discount else 0
-    elif signal_is_bear:
-        pts = 15 if zone_premium else 0
-    else:
-        pts = 0
-    score += pts
-    score_detail["Zone"] = pts
-
-    if midnight_bonus:
-        score += 3
-        score_detail["Midnight"] = 3
-    else:
-        score_detail["Midnight"] = 0
-
-    if signal_is_bull:
-        pts = 15 if in_bull_fvg else (7 if fvg_near_bull else 0)
-    elif signal_is_bear:
-        pts = 15 if in_bear_fvg else (7 if fvg_near_bear else 0)
-    else:
-        pts = 0
-    score += pts
-    score_detail["FVG"] = pts
-
-    adx_dir_ok = (
-        (signal_is_bull and pdi_val > mdi_val)
-        or (signal_is_bear and mdi_val > pdi_val)
-    )
-    if adx_val > ADX_TREND_MIN and adx_dir_ok:
-        pts = 10
-    elif adx_val > ADX_WEAK_MIN and adx_dir_ok:
-        pts = 6
-    elif adx_val > ADX_WEAK_MIN:
-        # Credit "trend strength" (ADX > 20) even without directional alignment.
-        pts = 3
-    else:
-        pts = 0
-    score += pts
-    score_detail["ADX"] = pts
-
-    if atr_val >= atr_mean:
-        pts = 5
-    elif atr_val >= atr_mean * 0.5:
-        pts = 3
-    else:
-        pts = 0
-    score += pts
-    score_detail["ATR"] = pts
-
-    if adr_consumed is not None and adr_consumed > 70:
-        score -= 5
-        score_detail["ADR Malus"] = -5
-    else:
-        score_detail["ADR Malus"] = 0
-
-    if bias_alignment == "COUNTER":
-        score -= 20
-        score_detail["Bias Malus"] = -20
-    else:
-        score_detail["Bias Malus"] = 0
-
-    return score, grade_for(score), score_detail

@@ -1,463 +1,266 @@
-"""Per-instrument analysis pipeline (read-only)."""
+"""Orchestration : téléchargement unique, analyse pure par actif, scan complet.
+
+Flux : fetch_universe (1 requête par (actif, timeframe), jamais de doublon) ->
+force devise (réutilise les H1 déjà chargés) -> analyze_asset (pur, sans I/O)
+pour chaque actif -> ScanOutput.
+"""
 
 from __future__ import annotations
 
 import logging
-
-from .logging_utils import LOGGER_NAME
-import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 
-import numpy as np
 import pandas as pd
-import pytz
 
 from .clock import Clock
 from .config import (
+    ASSETS,
+    CONTINUATION_ENABLED,
     FETCH_SPECS,
-    INDICES,
-    NY_TZ,
+    FETCH_WORKERS,
+    GRAN_TO_TF,
+    HMA_FLIP_LOOKBACK,
+    HMA_PERIOD,
+    MIN_BIAS_BARS,
+    MIN_TREND_BARS,
     STALENESS_LIMIT_MIN,
     STRENGTH_PAIRS,
 )
 from .data.oanda import AuthenticationError, CandleSource
-from .indicators import (
-    QuantEngine,
-    compute_adr,
-    compute_adr_consumed,
-    is_valid_df,
-    to_ny_times,
-)
-from .scoring import compute_score
+from .indicators import QuantEngine, compute_adr, compute_adr_consumed, is_valid_df
+from .levels import classify_zone, midnight_open
+from .logging_utils import LOGGER_NAME
+from .scoring import ALIGNED, COUNTER, NEUTRAL, compute_score
 from .signals import (
+    compute_adx_levels,
     compute_currency_strength,
-    compute_momentum_score,
-    compute_mtf_analysis,
-    detect_fvg,
-    find_last_hma_flip,
-    get_daily_bias_v2,
-    get_strength_delta,
+    compute_daily_bias,
+    compute_mtf,
+    hma_state,
+    strength_delta,
 )
+from .timeutil import killzone_at
 
 logger = logging.getLogger(LOGGER_NAME)
 
+Frames = dict[str, pd.DataFrame | None]
+Progress = Callable[[int, int, str], None]
 
-def _reject(
-    ticker: str,
-    reason: str,
-    debug_log: list[tuple[str, str]] | None,
-    lock: threading.Lock | None,
-) -> None:
-    if debug_log is None:
-        return
-    if lock:
-        with lock:
-            debug_log.append((ticker, reason))
-    else:
-        debug_log.append((ticker, reason))
+FLIP = "FLIP"
+CONTINUATION = "CONTINUATION"
+_M15 = pd.Timedelta(minutes=15)
 
 
-def analyze_asset(
+@dataclass
+class ScanOutput:
+    results: list[dict[str, object]] = field(default_factory=list)
+    rejects: list[tuple[str, str]] = field(default_factory=list)
+    strength: dict[str, float] = field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# Téléchargement
+# --------------------------------------------------------------------------- #
+def fetch_universe(
     source: CandleSource,
-    ticker: str,
-    clock: Clock,
-    freshness_limit_min: int = 30,
-    strength_scores: dict[str, float] | None = None,
-    debug_log: list[tuple[str, str]] | None = None,
-    _lock: threading.Lock | None = None,
-) -> dict[str, object] | None:
-    def reject(reason: str) -> None:
-        _reject(ticker, reason, debug_log, _lock)
+    assets: Iterable[str],
+    progress: Progress | None = None,
+    max_workers: int = FETCH_WORKERS,
+) -> tuple[dict[str, Frames], dict[str, dict[str, str]]]:
+    """Charge chaque (actif, granularité) exactement une fois, en parallèle.
 
+    Les paires de force devise absentes de `assets` sont chargées en H1 seulement.
+    Lève AuthenticationError dès qu'un token est refusé.
+    """
+    counts = dict(FETCH_SPECS)
+    tasks: list[tuple[str, str, int]] = [
+        (a, gran, cnt) for a in assets for gran, cnt in FETCH_SPECS
+    ]
+    asset_set = {t[0] for t in tasks}
+    tasks += [(p, "H1", counts["H1"]) for p in STRENGTH_PAIRS if p not in asset_set]
+
+    frames: dict[str, Frames] = {}
+    errors: dict[str, dict[str, str]] = {}
+    total, done = len(tasks), 0
+
+    pool = ThreadPoolExecutor(max_workers=max_workers)
     try:
-        fetch_results: dict[str, tuple[pd.DataFrame, str | None]] = {}
-        ex = ThreadPoolExecutor(max_workers=6)
-        futures = {ex.submit(source.fetch, ticker, gran, cnt): gran for gran, cnt in FETCH_SPECS}
-        try:
-            for fut in as_completed(futures):
-                gran = futures[fut]
-                try:
-                    fetch_results[gran] = fut.result()
-                except AuthenticationError:
-                    ex.shutdown(wait=False, cancel_futures=True)
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    logger.error("[%s] fetch %s exception: %s", ticker, gran, exc)
-                    fetch_results[gran] = (pd.DataFrame(), str(exc))
-        finally:
-            ex.shutdown(wait=True)
-
-        df_m15, err_m15 = fetch_results.get("M15", (pd.DataFrame(), "missing"))
-        df_h1, _ = fetch_results.get("H1", (pd.DataFrame(), None))
-        df_d, err_d = fetch_results.get("D", (pd.DataFrame(), "missing"))
-        df_4h, _ = fetch_results.get("H4", (pd.DataFrame(), None))
-        df_w, _ = fetch_results.get("W", (pd.DataFrame(), None))
-        df_mo, _ = fetch_results.get("M", (pd.DataFrame(), None))
-
-        if not is_valid_df(df_m15):
-            reject(f"FETCH_M15: {err_m15}")
-            return None
-        if not is_valid_df(df_d):
-            reject(f"FETCH_D: {err_d}")
-            return None
-
-        try:
-            last_candle_time = df_m15.index[-1]
-            if last_candle_time.tz is None:
-                last_candle_time = last_candle_time.tz_localize("UTC")
-            now_utc = clock.now(pytz.UTC)
-            staleness_minutes = (now_utc - last_candle_time).total_seconds() / 60
-            if staleness_minutes > STALENESS_LIMIT_MIN:
-                reject(f"STALE_DATA: {staleness_minutes:.0f}min")
-                return None
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[%s] staleness check error: %s", ticker, exc)
-            reject(f"EXCEPTION: staleness_check ({exc})")
-            return None
-
-        price = float(df_m15["close"].iloc[-1])
-
-        # Data quality: track missing timeframes.
-        missing_tfs = []
-        for g in ("M15", "H1", "D", "H4", "W", "M"):
-            df_g, _ = fetch_results.get(g, (pd.DataFrame(), None))
-            if not is_valid_df(df_g):
-                missing_tfs.append(g)
-        data_quality = "OK" if not missing_tfs else "DÉGRADÉ: " + ",".join(missing_tfs)
-
-        bias, _ = get_daily_bias_v2(df_d, current_price=price, clock=clock)
-        bias_bull = bias in ("BULLISH", "STRONG BULLISH")
-        bias_bear = bias in ("BEARISH", "STRONG BEARISH")
-
-        dfs_mtf = {
-            "M": df_mo if is_valid_df(df_mo) else None,
-            "W": df_w if is_valid_df(df_w) else None,
-            "D": df_d if is_valid_df(df_d) else None,
-            "4H": df_4h if is_valid_df(df_4h) else None,
-            "1H": df_h1 if is_valid_df(df_h1) else None,
-            "15m": df_m15 if is_valid_df(df_m15) else None,
-        }
-        mtf_pct, mtf_dominant, _ = compute_mtf_analysis(dfs_mtf)
-
-        hma = QuantEngine.hma(df_m15["close"], 20)
-        if hma.isna().iloc[-5:].any():
-            reject("HMA_NAN")
-            return None
-
-        flip_type, candles_ago, flip_idx = find_last_hma_flip(hma, max_lookback=20)
-        if flip_type is None:
-            reject("NO_HMA_FLIP")
-            return None
-
-        if bias == "NEUTRAL":
-            reject("BIAS_NEUTRAL")
-            return None
-
-        if (flip_type == "BULL" and bias_bull) or (flip_type == "BEAR" and bias_bear):
-            bias_alignment = "ALIGNED"
-        else:
-            bias_alignment = "COUNTER"
-
-        try:
-            flip_open_time = hma.index[flip_idx]
-            if flip_open_time.tz is None:
-                flip_open_time = flip_open_time.tz_localize("UTC")
-            flip_close_time = flip_open_time + pd.Timedelta(minutes=15)
-            mins_ago = max(
-                0,
-                int(
-                    (clock.now(pytz.UTC) - flip_close_time).total_seconds() // 60
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[%s] real freshness calc error: %s", ticker, exc)
-            mins_ago = (candles_ago or 0) * 15
-
-        freshness_str = (
-            f"⚡ {mins_ago} min" if mins_ago <= freshness_limit_min
-            else f"⏳ {mins_ago} min"
-        )
-        signal_fresh = mins_ago <= freshness_limit_min
-
-        hma_now = hma.iloc[-1]
-        if flip_type == "BULL" and price <= hma_now:
-            reject("PRICE_BELOW_HMA_ON_BULL")
-            return None
-        if flip_type == "BEAR" and price >= hma_now:
-            reject("PRICE_ABOVE_HMA_ON_BEAR")
-            return None
-
-        atr_m15 = QuantEngine.atr(df_m15, 14)
-        atr_val = float(atr_m15.iloc[-1])
-        atr_mean = float(atr_m15.iloc[-50:].mean())
-
-        in_bull_fvg, in_bear_fvg, nb_fvg, nr_fvg = detect_fvg(
-            df_m15, price, lookback=80
-        )
-        fvg_near_bull = (
-            nb_fvg is not None
-            and abs(price - (nb_fvg[0] + nb_fvg[1]) / 2) < atr_val
-        )
-        fvg_near_bear = (
-            nr_fvg is not None
-            and abs(price - (nr_fvg[0] + nr_fvg[1]) / 2) < atr_val
-        )
-
-        midnight_open = None
-        midnight_open_approximate = False
-        try:
-            ny_tz = pytz.timezone(NY_TZ)
-            m15_times = to_ny_times(df_m15.index)
-            today_ny = clock.now(ny_tz).date()
-            mn_mask = (
-                (np.array([t.date() for t in m15_times]) == today_ny)
-                & (np.array([t.hour for t in m15_times]) == 0)
-                & (np.array([t.minute for t in m15_times]) == 0)
-            )
-            mn_c = df_m15[mn_mask]
-            if mn_c.empty:
-                today_mask = np.array([t.date() for t in m15_times]) == today_ny
-                today_c = df_m15[today_mask]
-                if not today_c.empty:
-                    first_time = m15_times[today_mask][0]
-                    if first_time.hour != 0 or first_time.minute != 0:
-                        midnight_open_approximate = True
-                    midnight_open = float(today_c["open"].iloc[0])
-            else:
-                midnight_open = float(mn_c["open"].iloc[0])
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[%s] midnight_open error: %s", ticker, exc)
-
-        pdh = float(df_d["high"].iloc[-1])
-        pdl = float(df_d["low"].iloc[-1])
-
-        if midnight_open is not None and not midnight_open_approximate:
-            in_premium = (price > midnight_open) and (price <= pdh)
-            in_discount = (price < midnight_open) and (price >= pdl)
-            in_extended_high = price > pdh
-            in_extended_low = price < pdl
-
-            if in_extended_high:
-                zone_label = "EXT HIGH"
-            elif in_extended_low:
-                zone_label = "EXT LOW"
-            elif in_premium:
-                zone_label = "PREMIUM"
-            elif in_discount:
-                zone_label = "DISCOUNT"
-            else:
-                zone_label = "EQUILIBRE"
-
-            zone_premium = zone_label in ("EXT HIGH", "PREMIUM")
-            zone_discount = zone_label in ("EXT LOW", "DISCOUNT")
-        else:
-            d1_mid = (pdh + pdl) / 2.0
-            in_discount = price < d1_mid
-            in_premium = price > d1_mid
-            zone_discount = in_discount
-            zone_premium = in_premium
-            zone_label = (
-                "DISCOUNT" if in_discount
-                else "PREMIUM" if in_premium
-                else "EQUILIBRE"
-            )
-
-        midnight_bonus = False
-        if (
-            midnight_open is not None
-            and not midnight_open_approximate
-            and (
-                (flip_type == "BULL" and price < midnight_open)
-                or (flip_type == "BEAR" and price > midnight_open)
-            )
-        ):
-            midnight_bonus = True
-
-        try:
-            df_adx_src = df_h1 if is_valid_df(df_h1, 20) else df_m15
-            adx_s, pdi_s, mdi_s = QuantEngine.adx(df_adx_src, 14)
-            adx_val_score = round(float(adx_s.iloc[-1]), 1)
-            pdi_val = round(float(pdi_s.iloc[-1]), 1)
-            mdi_val = round(float(mdi_s.iloc[-1]), 1)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[%s] ADX score computation failed: %s", ticker, exc)
-            adx_val_score, pdi_val, mdi_val = 0.0, 0.0, 0.0
-
-        if ticker in INDICES:
-            atr_d_raw = QuantEngine.atr(df_d, 14).iloc[-1]
-            adr_display = round(float(atr_d_raw), 2) if not pd.isna(atr_d_raw) else None
-            adr_label = "ATR"
-            adr_consumed = None
-        else:
-            adr_raw = compute_adr(df_d, period=14)
-            adr_display = round(float(adr_raw), 5) if not np.isnan(adr_raw) else None
-            adr_label = "ADR"
-            adr_consumed = compute_adr_consumed(
-                df_m15,
-                float(adr_raw) if not np.isnan(adr_raw) else None,
-                clock,
-            )
-
-        score, grade, _ = compute_score(
-            flip_type,
-            mins_ago,
-            mtf_pct,
-            mtf_dominant,
-            zone_discount,
-            zone_premium,
-            in_bull_fvg,
-            in_bear_fvg,
-            fvg_near_bull,
-            fvg_near_bear,
-            adx_val_score,
-            pdi_val,
-            mdi_val,
-            atr_val,
-            atr_mean,
-            midnight_bonus=midnight_bonus,
-            adr_consumed=adr_consumed,
-            bias_alignment=bias_alignment,
-        )
-
-        strength_delta = None
-        if strength_scores:
-            strength_delta = get_strength_delta(ticker, strength_scores)
-
-        signal_is_bull = flip_type == "BULL"
-        df_h4 = df_4h if is_valid_df(df_4h) else None
-        df_h1_ok = df_h1 if is_valid_df(df_h1) else None
-        momentum = compute_momentum_score(df_h4, df_h1_ok, df_m15, signal_is_bull)
-
-        sig = (
-            ("▲ LONG" if flip_type == "BULL" else "▼ SHORT")
-            if signal_fresh
-            else ("LONG (expiré)" if flip_type == "BULL" else "SHORT (expiré)")
-        )
-
-        return {
-            "Fraîcheur": freshness_str,
-            "Actif + Note": ticker,
-            "Signal": sig,
-            "Biais Daily": bias,
-            "Alignement": bias_alignment,
-            "Zone": zone_label,
-            "Score": score,
-            "Grade": grade,
-            "ADR": adr_display,
-            "ADR Label": adr_label,
-            "ADR Consumed": adr_consumed,
-            "MTF Pct": mtf_pct,
-            "Strength Δ": strength_delta,
-            "Momentum": momentum,
-            "signal_is_bull": signal_is_bull,
-            "Midnight Bonus": midnight_bonus,
-            "mins_ago": mins_ago,
-            "data_quality": data_quality,
-        }
-
-    except AuthenticationError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.error("[%s] analyze_asset EXCEPTION: %s", ticker, exc, exc_info=True)
-        reject(f"EXCEPTION: {exc}")
-        return None
-
-
-def fetch_strength_data(
-    source: CandleSource,
-    pairs: tuple[str, ...] = STRENGTH_PAIRS,
-) -> dict[str, pd.DataFrame]:
-    dfs: dict[str, pd.DataFrame] = {}
-    ex = ThreadPoolExecutor(max_workers=8)
-    futures = {ex.submit(source.fetch, pair, "H1", 100): pair for pair in pairs}
-    try:
+        futures = {pool.submit(source.fetch, t, g, c): (t, g) for t, g, c in tasks}
         for fut in as_completed(futures):
-            pair = futures[fut]
-            try:
-                df, _ = fut.result()
-                if not df.empty:
-                    dfs[pair] = df
-            except AuthenticationError:
-                ex.shutdown(wait=False, cancel_futures=True)
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("fetch_strength_data %s: %s", pair, exc)
+            ticker, gran = futures[fut]
+            df, err = fut.result()          # AuthenticationError remonte ici
+            frames.setdefault(ticker, {})[gran] = df if is_valid_df(df) else None
+            if err:
+                errors.setdefault(ticker, {})[gran] = err
+            done += 1
+            if progress:
+                progress(done, total, ticker)
+    except AuthenticationError:
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
     finally:
-        ex.shutdown(wait=True)
-    return dfs
+        pool.shutdown(wait=True)
+    return frames, errors
 
 
-def analyze_assets(
-    source: CandleSource,
+# --------------------------------------------------------------------------- #
+# Analyse d'un actif (pure : aucune I/O, aucune horloge globale)
+# --------------------------------------------------------------------------- #
+def analyze_asset(
+    ticker: str,
+    frames: Frames,
+    fetch_errors: dict[str, str],
     clock: Clock,
-    assets: tuple[str, ...],
-    freshness_limit_min: int,
     strength_scores: dict[str, float],
-    progress: Callable[[int, int, str], None] | None = None,
-    max_workers: int = 3,
-) -> tuple[list[dict[str, object]], list[tuple[str, str]]]:
-    results: list[dict[str, object]] = []
-    debug_log: list[tuple[str, str]] = []
-    lock = threading.Lock()
-    completed = 0
-    ex = ThreadPoolExecutor(max_workers=max_workers)
-    future_map = {
-        ex.submit(
-            analyze_asset,
-            source,
-            ticker,
-            clock,
-            freshness_limit_min,
-            strength_scores,
-            debug_log,
-            lock,
-        ): ticker
-        for ticker in assets
-    }
-    try:
-        for fut in as_completed(future_map):
-            ticker = future_map[fut]
-            try:
-                res = fut.result()
-                if res:
-                    with lock:
-                        results.append(res)
-            except AuthenticationError:
-                ex.shutdown(wait=False, cancel_futures=True)
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Outer future %s: %s", ticker, exc)
-            completed += 1
-            if progress is not None:
-                progress(completed, len(assets), ticker)
-    finally:
-        ex.shutdown(wait=True)
-    return results, debug_log
+) -> tuple[dict[str, object] | None, str | None]:
+    """Retourne (signal, None) ou (None, motif de rejet)."""
+    df_m15, df_d = frames.get("M15"), frames.get("D")
+    for gran, df in (("M15", df_m15), ("D", df_d)):
+        if df is None:
+            return None, f"FETCH_{gran}: {fetch_errors.get(gran, 'données absentes')}"
+
+    now = clock.now()
+    age_min = (now - df_m15.index[-1]).total_seconds() / 60.0
+    if age_min > STALENESS_LIMIT_MIN:
+        return None, f"STALE_DATA: dernière bougie M15 il y a {age_min:.0f} min"
+
+    price = float(df_m15["close"].iloc[-1])
+    bias = compute_daily_bias(df_d, df_m15, price, clock)
+    if bias is None:
+        return None, f"INSUFFICIENT_DATA: D = {len(df_d)} barres (< {MIN_BIAS_BARS})"
+
+    hma = QuantEngine.hma(df_m15["close"], HMA_PERIOD)
+    if hma.isna().iloc[-5:].any():
+        return None, "HMA_NAN: historique M15 insuffisant"
+    state = hma_state(hma)
+    if state is None:
+        return None, "HMA_NAN: pente indéterminée"
+
+    is_bull = state.direction > 0
+    hma_now = float(hma.iloc[-1])
+    if is_bull and price <= hma_now:
+        return None, f"PRICE_BELOW_HMA_ON_BULL: prix {price:.5g} <= HMA {hma_now:.5g}"
+    if not is_bull and price >= hma_now:
+        return None, f"PRICE_ABOVE_HMA_ON_BEAR: prix {price:.5g} >= HMA {hma_now:.5g}"
+
+    if bias.direction == state.direction:
+        alignment = ALIGNED
+    elif bias.direction == 0:
+        alignment = NEUTRAL
+    else:
+        alignment = COUNTER
+
+    pdh, pdl = float(df_d["high"].iloc[-1]), float(df_d["low"].iloc[-1])
+    zone = classify_zone(price, midnight_open(df_m15, now), pdh, pdl)
+
+    is_flip = (
+        state.bars_since_flip is not None and state.bars_since_flip <= HMA_FLIP_LOOKBACK
+    )
+    mins_ago: int | None = None
+    flip_time: pd.Timestamp | None = None
+    if is_flip:
+        flip_time = df_m15.index[state.flip_pos]
+        mins_ago = max(0, int((now - (flip_time + _M15)).total_seconds() // 60))
+    elif not CONTINUATION_ENABLED:
+        return None, f"NO_HMA_FLIP: aucun flip dans les {HMA_FLIP_LOOKBACK} dernières bougies"
+    elif alignment != ALIGNED or not zone.favorable(is_bull):
+        return None, (
+            f"NO_HMA_FLIP: continuation non éligible "
+            f"(biais {alignment}, zone {zone.label})"
+        )
+
+    mtf = compute_mtf({tf: frames.get(g) for g, tf in GRAN_TO_TF.items()})
+    adx_count, adx_values = compute_adx_levels(
+        frames.get("H4"), frames.get("H1"), df_m15
+    )
+    delta = strength_delta(ticker, strength_scores) if strength_scores else None
+    adr = compute_adr(df_d)
+    adr_value = None if pd.isna(adr) else adr
+    adr_consumed = compute_adr_consumed(df_m15, adr_value, clock)
+
+    scored = compute_score(
+        is_bull=is_bull,
+        mins_ago=mins_ago,
+        mtf_pct=mtf.pct,
+        mtf_aligned=mtf.dominant == state.direction,
+        zone_favorable=zone.favorable(is_bull),
+        alignment=alignment,
+        bias_strong=bias.is_strong,
+        strength_delta=delta,
+        adx_strong_count=adx_count,
+        adr_consumed=adr_consumed,
+    )
+
+    data_issues = [
+        f"{tf} ({len(frames[g]) if frames.get(g) is not None else 0} barres)"
+        for g, tf in GRAN_TO_TF.items()
+        if not is_valid_df(frames.get(g), MIN_TREND_BARS)
+    ]
+
+    return {
+        "ticker": ticker,
+        "is_bull": is_bull,
+        "signal_type": FLIP if is_flip else CONTINUATION,
+        "mins_ago": mins_ago,
+        "killzone": killzone_at(flip_time.to_pydatetime()) if flip_time is not None else "",
+        "bias": bias.label,
+        "bias_detail": bias.describe(),
+        "alignment": alignment,
+        "zone": zone.label,
+        "zone_ref": zone.ref,
+        "score": scored.score,
+        "grade": scored.grade,
+        "score_detail": scored.describe(),
+        "adr": None if adr_value is None else round(adr_value, 5),
+        "adr_consumed": adr_consumed,
+        "mtf_pct": mtf.pct,
+        "mtf_detail": mtf.describe(),
+        "strength_delta": delta,
+        "adx_strong": adx_count,
+        "adx_values": adx_values,
+        "data_issues": data_issues,
+    }, None
 
 
+# --------------------------------------------------------------------------- #
+# Scan complet
+# --------------------------------------------------------------------------- #
 def run_scan(
     source: CandleSource,
     clock: Clock,
-    assets: tuple[str, ...],
-    freshness_limit_min: int = 30,
-    progress: Callable[[int, int, str], None] | None = None,
-    max_workers: int = 3,
-) -> tuple[list[dict[str, object]], list[tuple[str, str]], dict[str, float]]:
-    """Fetch currency strength then analyse every asset.
+    assets: Iterable[str] = ASSETS,
+    progress: Progress | None = None,
+    max_workers: int = FETCH_WORKERS,
+) -> ScanOutput:
+    assets = tuple(assets)
+    n_fetch = len(assets) * len(FETCH_SPECS) + sum(1 for p in STRENGTH_PAIRS if p not in assets)
+    total = n_fetch + len(assets)
 
-    Returns (results, debug_log, strength_scores). Results are per-asset dicts;
-    ordering is completion order and must not be relied upon.
-    """
-    dfs_h1 = fetch_strength_data(source)
-    strength_scores = compute_currency_strength(dfs_h1)
-    results, debug_log = analyze_assets(
-        source,
-        clock,
-        assets,
-        freshness_limit_min,
-        strength_scores,
-        progress,
-        max_workers,
+    def fetch_progress(done: int, _total: int, ticker: str) -> None:
+        if progress:
+            progress(done, total, ticker)
+
+    frames, errors = fetch_universe(source, assets, fetch_progress, max_workers)
+
+    strength = compute_currency_strength(
+        {p: frames.get(p, {}).get("H1") for p in STRENGTH_PAIRS}
     )
-    return results, debug_log, strength_scores
+
+    out = ScanOutput(strength=strength)
+    for i, ticker in enumerate(assets, start=1):
+        try:
+            signal, reason = analyze_asset(
+                ticker, frames.get(ticker, {}), errors.get(ticker, {}), clock, strength
+            )
+        except Exception as exc:  # noqa: BLE001 - un actif ne doit jamais tuer le scan
+            logger.exception("[%s] analyse en échec", ticker)
+            signal, reason = None, f"EXCEPTION: {type(exc).__name__}: {exc}"
+        if signal is not None:
+            out.results.append(signal)
+        else:
+            out.rejects.append((ticker, reason or "NO_RESULT"))
+        if progress:
+            progress(n_fetch + i, total, ticker)
+    return out

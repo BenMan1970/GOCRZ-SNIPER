@@ -1,4 +1,10 @@
-"""Technical indicators. Behaviour is frozen by tests/golden."""
+"""Indicateurs techniques (purs, sans I/O).
+
+L'ADX est exposé comme une COURBE unique (force de tendance, sans direction).
+Ses composantes directionnelles internes (mouvements haussier/baissier lissés)
+ne sont que des intermédiaires de calcul : elles ne sont ni retournées ni
+utilisées ailleurs dans le projet.
+"""
 
 from __future__ import annotations
 
@@ -6,166 +12,129 @@ import logging
 
 import numpy as np
 import pandas as pd
-import pytz
+from numpy.lib.stride_tricks import sliding_window_view
 
-from .config import NY_TZ
+from .clock import Clock
 from .logging_utils import LOGGER_NAME
+from .timeutil import trading_day_start
 
 logger = logging.getLogger(LOGGER_NAME)
 
 
 def is_valid_df(df: pd.DataFrame | None, min_rows: int = 1) -> bool:
-    return df is not None and isinstance(df, pd.DataFrame) and len(df) >= min_rows
+    return isinstance(df, pd.DataFrame) and len(df) >= min_rows
+
+
+def ema(series: pd.Series, span: int) -> pd.Series:
+    return series.ewm(span=span, adjust=False).mean()
 
 
 class QuantEngine:
     @staticmethod
     def wma(series: pd.Series, period: int) -> pd.Series:
-        weights = np.arange(1, period + 1, dtype=np.float64)
-        w_sum = weights.sum()
+        """Moyenne pondérée linéaire, vectorisée (NaN dans la fenêtre => NaN)."""
         arr = series.to_numpy(dtype=np.float64)
-        n = len(arr)
-        out = np.full(n, np.nan)
-        for i in range(period - 1, n):
-            out[i] = np.dot(arr[i - period + 1: i + 1], weights) / w_sum
+        out = np.full(len(arr), np.nan)
+        if len(arr) >= period:
+            weights = np.arange(1, period + 1, dtype=np.float64)
+            out[period - 1:] = sliding_window_view(arr, period) @ weights / weights.sum()
         return pd.Series(out, index=series.index)
 
     @staticmethod
     def hma(series: pd.Series, period: int = 20) -> pd.Series:
         half = int(period / 2)
-        sqrt_p = int(np.sqrt(period))
+        root = int(np.sqrt(period))
         raw = 2 * QuantEngine.wma(series, half) - QuantEngine.wma(series, period)
         if raw.isna().all():
             return pd.Series(np.nan, index=series.index)
-        return QuantEngine.wma(raw, sqrt_p)
+        return QuantEngine.wma(raw, root)
 
     @staticmethod
     def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-        c = df["close"].shift(1)
-        tr = pd.concat(
+        prev_close = df["close"].shift(1)
+        true_range = pd.concat(
             [
                 df["high"] - df["low"],
-                (df["high"] - c).abs(),
-                (df["low"] - c).abs(),
+                (df["high"] - prev_close).abs(),
+                (df["low"] - prev_close).abs(),
             ],
             axis=1,
         ).max(axis=1)
-        return tr.ewm(alpha=1 / period, adjust=False).mean()
+        return true_range.ewm(alpha=1 / period, adjust=False).mean()
 
     @staticmethod
-    def adx(df: pd.DataFrame, period: int = 14) -> tuple[pd.Series, pd.Series, pd.Series]:
-        high = df["high"]
-        low = df["low"]
-        prev_high = high.shift(1)
-        prev_low = low.shift(1)
-
-        up_move = high - prev_high
-        down_move = prev_low - low
-
-        pdm = pd.Series(
+    def adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+        """Courbe ADX de Wilder (force de tendance 0-100, sans direction)."""
+        up_move = df["high"].diff()
+        down_move = -df["low"].diff()
+        pos_move = pd.Series(
             np.where((up_move > down_move) & (up_move > 0), up_move, 0.0),
-            index=df.index,
-            dtype=np.float64,
+            index=df.index, dtype=np.float64,
         )
-        mdm = pd.Series(
+        neg_move = pd.Series(
             np.where((down_move > up_move) & (down_move > 0), down_move, 0.0),
-            index=df.index,
-            dtype=np.float64,
+            index=df.index, dtype=np.float64,
         )
-
-        atr_v = QuantEngine.atr(df, period)
-        pdm_s = pdm.ewm(alpha=1 / period, adjust=False).mean()
-        mdm_s = mdm.ewm(alpha=1 / period, adjust=False).mean()
-
-        safe_atr = atr_v.replace(0, np.nan)
-        pdi = 100 * pdm_s / safe_atr
-        mdi = 100 * mdm_s / safe_atr
-        dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
-        adx = dx.ewm(alpha=1 / period, adjust=False).mean()
-        return adx, pdi, mdi
+        alpha = 1 / period
+        safe_atr = QuantEngine.atr(df, period).replace(0, np.nan)
+        pos_line = 100 * pos_move.ewm(alpha=alpha, adjust=False).mean() / safe_atr
+        neg_line = 100 * neg_move.ewm(alpha=alpha, adjust=False).mean() / safe_atr
+        spread = (pos_line - neg_line).abs()
+        total = (pos_line + neg_line).replace(0, np.nan)
+        return (100 * spread / total).ewm(alpha=alpha, adjust=False).mean()
 
     @staticmethod
     def rsi(series: pd.Series, period: int = 14) -> pd.Series:
         delta = series.diff()
         gain = delta.where(delta > 0, 0.0)
         loss = -delta.where(delta < 0, 0.0)
-
         avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
-        rsi_out = pd.Series(np.nan, index=series.index, dtype=float)
-        mask_zero = avg_loss == 0
-        rsi_out[mask_zero] = 100.0
-        mask_nz = ~mask_zero & avg_loss.notna() & avg_gain.notna()
-        rsi_out[mask_nz] = 100 - (100 / (1 + avg_gain[mask_nz] / avg_loss[mask_nz]))
-        return rsi_out
+        out = pd.Series(np.nan, index=series.index, dtype=float)
+        flat = avg_loss == 0
+        out[flat] = 100.0
+        valid = ~flat & avg_loss.notna() & avg_gain.notna()
+        out[valid] = 100 - (100 / (1 + avg_gain[valid] / avg_loss[valid]))
+        return out
 
-    @staticmethod
-    def zlema(series: pd.Series, period: int = 50, lag: int = 17) -> pd.Series:
-        src = series + (series - series.shift(lag))
-        return src.ewm(span=period, adjust=False).mean()
+
+def swing_points(series: pd.Series, wing: int = 5) -> tuple[np.ndarray, np.ndarray]:
+    """Positions des pivots hauts/bas confirmés (`wing` bougies de chaque côté).
+
+    Sur un plateau de valeurs égales, seul le premier point est retenu
+    (pas de doublons adjacents). Les `wing` dernières bougies ne peuvent pas
+    être confirmées : c'est voulu (pas de look-ahead).
+    """
+    arr = series.to_numpy(dtype=np.float64)
+    if len(arr) < 2 * wing + 1:
+        return np.array([], dtype=int), np.array([], dtype=int)
+    win = sliding_window_view(arr, 2 * wing + 1)
+    center, left, right = win[:, wing], win[:, :wing], win[:, wing + 1:]
+    highs = (center > left.max(axis=1)) & (center >= right.max(axis=1))
+    lows = (center < left.min(axis=1)) & (center <= right.min(axis=1))
+    return np.flatnonzero(highs) + wing, np.flatnonzero(lows) + wing
 
 
 def compute_adr(df_d: pd.DataFrame, period: int = 14) -> float:
+    """Range journalier moyen sur les `period` dernières bougies D complètes."""
     if not is_valid_df(df_d, period):
         return float("nan")
-    ranges = (df_d["high"] - df_d["low"]).iloc[-period:]
-    return float(ranges.mean()) if not ranges.empty else float("nan")
+    return float((df_d["high"] - df_d["low"]).iloc[-period:].mean())
 
 
 def compute_adr_consumed(
-    df_m15: pd.DataFrame,
-    adr_value: float | None,
-    clock: Clock,
+    df_m15: pd.DataFrame, adr_value: float | None, clock: Clock
 ) -> float | None:
-    if not is_valid_df(df_m15) or adr_value is None or adr_value <= 0:
+    """% du ADR déjà parcouru depuis l'ouverture du jour de trading (17:00 NY).
+
+    Valeur non plafonnée : 130 % signifie que le range du jour dépasse l'ADR de 30 %.
+    """
+    if not is_valid_df(df_m15) or adr_value is None or not adr_value > 0:
         return None
-    try:
-        ny_tz = pytz.timezone(NY_TZ)
-        idx = pd.DatetimeIndex(df_m15.index)
-        if idx.tz is None:
-            idx = idx.tz_localize("UTC")
-        idx_ny = idx.tz_convert(ny_tz)
-        now_ny = clock.now(ny_tz)
-        # Trading day starts at 17:00 NY (OANDA daily alignment).
-        if (now_ny.hour, now_ny.minute) < (17, 0):
-            start_day = (now_ny - pd.Timedelta(days=1)).date()
-        else:
-            start_day = now_ny.date()
-        start_ts = pd.Timestamp(start_day, tz=ny_tz).replace(
-            hour=17, minute=0, second=0, microsecond=0
-        )
-
-        mask = idx_ny >= start_ts
-        today_bars = df_m15[mask]
-        if today_bars.empty:
-            return None
-
-        today_h = float(today_bars["high"].max())
-        today_l = float(today_bars["low"].min())
-        consumed = (today_h - today_l) / adr_value * 100.0
-        return round(min(consumed, 100.0), 1)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("compute_adr_consumed error: %s", exc)
+    start = trading_day_start(clock.now())
+    bars = df_m15[df_m15.index >= start]
+    if bars.empty:
         return None
-
-
-def swing_points(series: pd.Series, wing: int = 5) -> tuple[list[int], list[int]]:
-    highs: list[int] = []
-    lows: list[int] = []
-    arr = series.to_numpy(dtype=np.float64)
-    n = len(arr)
-    for i in range(wing, n - wing):
-        window = arr[i - wing: i + wing + 1]
-        if abs(arr[i] - window.max()) < 1e-9:
-            highs.append(i)
-        if abs(arr[i] - window.min()) < 1e-9:
-            lows.append(i)
-    return highs, lows
-
-
-def to_ny_times(index: pd.Index) -> pd.DatetimeIndex:
-    idx = pd.to_datetime(index)
-    if idx.tz is None:
-        idx = idx.tz_localize("UTC")
-    return idx.tz_convert(pytz.timezone(NY_TZ))
+    day_range = float(bars["high"].max() - bars["low"].min())
+    return round(day_range / adr_value * 100.0, 1)

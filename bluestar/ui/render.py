@@ -1,14 +1,19 @@
-"""Pure HTML rendering helpers (no Streamlit imports)."""
+"""Rendu HTML pur (aucun import Streamlit) et préparation du tableau."""
 
 from __future__ import annotations
 
 import html
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 
-from ..config import DISPLAY_NAMES, GRADE_ORDER
+from ..config import (
+    ADX_TREND_MIN,
+    DISPLAY_NAMES,
+    FORCE_NEUTRAL_BAND,
+    GRADE_ORDER,
+    MIN_GRADE_MAP,
+)
 
 KZ_STYLE = {
     "London": ("LONDON", "#4f8dff"),
@@ -47,11 +52,11 @@ ICON_CLOCK = (
     '<path d="M7 4.2V7.2l2 1.2" stroke="currentColor" stroke-width="1.25" '
     'stroke-linecap="round" stroke-linejoin="round"/></svg>'
 )
-ICON_MOON = (
+ICON_TREND = (
     '<svg width="12" height="12" viewBox="0 0 14 14" fill="none" '
     'style="vertical-align:-2px">'
-    '<path d="M11.1 8.6A4.7 4.7 0 0 1 5.4 2.9 4.7 4.7 0 1 0 11.1 8.6z" '
-    'stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>'
+    '<path d="M1.5 10.5 5 7l2.4 2.4L12.4 3.6M9 3.6h3.4V7" stroke="currentColor" '
+    'stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 )
 ICON_ALERT = (
     '<svg width="12" height="12" viewBox="0 0 14 14" fill="none" '
@@ -98,27 +103,34 @@ ZONE_MAP = {
 }
 
 
-def fresh_cell(fresh_str: str, is_fresh: bool) -> str:
-    txt = html.escape(fresh_str.replace("⚡", "").replace("⏳", "").strip())
-    col = "#34d399" if is_fresh else "#91a4bf"
-    ico = ICON_BOLT if is_fresh else ICON_CLOCK
-    dot = (
-        f'<span class="bs-dot" style="width:4px;height:4px;border-radius:50%;'
-        f'background:{col}"></span>' if is_fresh else ""
-    )
-    bg = "rgba(52,211,153,.09)" if is_fresh else "rgba(145,164,191,.08)"
-    bd = "rgba(52,211,153,.38)" if is_fresh else "rgba(145,164,191,.26)"
+def _attr(text: str) -> str:
+    return html.escape(str(text), quote=True)
+
+
+def fresh_cell(signal_type: str, mins: float | None, is_fresh: bool) -> str:
+    if signal_type == "CONTINUATION":
+        col, bg, bd, ico, txt = "#67e8f9", "rgba(56,189,248,.09)", "rgba(56,189,248,.38)", ICON_TREND, "TENDANCE"
+        dot = ""
+    else:
+        txt = f"{int(mins)} min" if mins is not None and not pd.isna(mins) else "—"
+        col = "#34d399" if is_fresh else "#91a4bf"
+        ico = ICON_BOLT if is_fresh else ICON_CLOCK
+        dot = (
+            f'<span class="bs-dot" style="width:4px;height:4px;border-radius:50%;'
+            f'background:{col}"></span>' if is_fresh else ""
+        )
+        bg = "rgba(52,211,153,.09)" if is_fresh else "rgba(145,164,191,.08)"
+        bd = "rgba(52,211,153,.38)" if is_fresh else "rgba(145,164,191,.26)"
     return (
         f'<span style="display:inline-flex;align-items:center;gap:6px;color:{col};'
         f'background:{bg};border:1px solid {bd};padding:4px 9px;border-radius:4px;'
         f"font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:500;"
-        f'white-space:nowrap">{dot}<span style="display:inline-flex">{ico}</span>{txt}</span>'
+        f'white-space:nowrap">{dot}<span style="display:inline-flex">{ico}</span>{html.escape(txt)}</span>'
     )
 
 
-def sig_cell(sig: str, is_bull: bool) -> str:
-    expired = "expiré" in sig
-    col = ("#34d399" if is_bull else "#fb7185") if not expired else "#91a4bf"
+def sig_cell(is_bull: bool, expired: bool) -> str:
+    col = (("#34d399" if is_bull else "#fb7185") if not expired else "#91a4bf")
     word = "LONG" if is_bull else "SHORT"
     if expired:
         return (
@@ -136,10 +148,11 @@ def sig_cell(sig: str, is_bull: bool) -> str:
     )
 
 
-def bias_cell(b: str) -> str:
+def bias_cell(b: str, tip: str = "") -> str:
+    title = f' title="{_attr(tip)}"' if tip else ""
     if b not in BIAS_MAP:
         return (
-            '<span style="color:#91a4bf;font-size:13px;letter-spacing:.02em">'
+            f'<span{title} style="color:#91a4bf;font-size:13px;letter-spacing:.02em">'
             "— Neutral</span>"
         )
     label, col, strength, up = BIAS_MAP[b]
@@ -148,55 +161,37 @@ def bias_cell(b: str) -> str:
         for _ in range(strength)
     )
     return (
-        f'<span style="display:inline-flex;align-items:center;gap:1px;color:{col};'
+        f'<span{title} style="display:inline-flex;align-items:center;gap:1px;color:{col};'
         f'font-size:13.5px;font-weight:600;letter-spacing:.01em">'
         f'{arrows}<span style="margin-left:5px">{html.escape(label)}</span></span>'
     )
 
 
-def zone_cell(z: str, mn_bonus: bool) -> str:
+def zone_cell(z: str, ref: str = "") -> str:
     col, bg, bd = ZONE_MAP.get(z, ZONE_MAP["EQUILIBRE"])
-    moon = (
-        f'<span style="color:#f5c451;display:inline-flex;margin-left:6px" '
-        f'title="Confluence midnight open">{ICON_MOON}</span>' if mn_bonus else ""
-    )
+    tip = {"MO": "Référence : midnight open (00h00 NY)",
+           "D1": "Référence : milieu du range D-1 (midnight open indisponible)"}.get(ref, "")
     return (
-        f'<span style="display:inline-flex;align-items:center">'
-        f'<span style="color:{col};background:{bg};border:1px solid {bd};'
+        f'<span title="{_attr(tip)}" style="color:{col};background:{bg};border:1px solid {bd};'
         f'padding:4px 8px;border-radius:4px;font-size:10.5px;font-weight:600;'
-        f'letter-spacing:.1em;white-space:nowrap">{html.escape(z)}</span>{moon}</span>'
+        f'letter-spacing:.1em;white-space:nowrap">{html.escape(z)}</span>'
     )
 
 
-def score_bar(score: int) -> str:
+def score_bar(score: int, tip: str = "") -> str:
     if score >= 85:
-        grad, col = (
-            "linear-gradient(90deg,#b78b2e,#f5c451)",
-            "#f5c451",
-        )
+        grad, col = "linear-gradient(90deg,#b78b2e,#f5c451)", "#f5c451"
     elif score >= 70:
-        grad, col = (
-            "linear-gradient(90deg,#2457d6,#4f8dff)",
-            "#8ab8ff",
-        )
+        grad, col = "linear-gradient(90deg,#2457d6,#4f8dff)", "#8ab8ff"
     elif score >= 55:
-        grad, col = (
-            "linear-gradient(90deg,#0e7490,#38bdf8)",
-            "#67e8f9",
-        )
+        grad, col = "linear-gradient(90deg,#0e7490,#38bdf8)", "#67e8f9"
     elif score >= 40:
-        grad, col = (
-            "linear-gradient(90deg,#3a4d68,#6f84a3)",
-            "#c3d0e4",
-        )
+        grad, col = "linear-gradient(90deg,#3a4d68,#6f84a3)", "#c3d0e4"
     else:
-        grad, col = (
-            "linear-gradient(90deg,#26364e,#4b5f7c)",
-            "#93a6c2",
-        )
-    width = max(3, min(score, 103) / 103 * 100) if score >= 0 else 3
+        grad, col = "linear-gradient(90deg,#26364e,#4b5f7c)", "#93a6c2"
+    width = max(3, min(score, 100))
     return (
-        f'<div style="display:flex;align-items:center;gap:10px">'
+        f'<div title="{_attr(tip)}" style="display:flex;align-items:center;gap:10px">'
         f'<span style="color:{col};font-weight:500;font-size:21px;'
         f"font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;"
         f'letter-spacing:-.04em;min-width:38px;text-align:right">{score}</span>'
@@ -207,30 +202,24 @@ def score_bar(score: int) -> str:
     )
 
 
-def adr_cell(v: float | None, label: str = "ADR", consumed: float | None = None) -> str:
-    if v is None:
+def adr_cell(v: float | None, consumed: float | None = None) -> str:
+    if v is None or pd.isna(v):
         return '<span style="color:#91a4bf">—</span>'
     formatted = f"{v:.5f}" if v < 1.0 else f"{v:.2f}"
-    tag_color = "#8ab8ff" if label == "ADR" else "#67e8f9"
     head = (
         f'<div style="display:flex;align-items:baseline;gap:7px">'
-        f'<span style="color:{tag_color};font-size:9.5px;font-weight:600;letter-spacing:.11em;'
-        f'background:{tag_color}12;border:1px solid {tag_color}3d;padding:1px 5px;'
-        f'border-radius:3px">{html.escape(label)}</span>'
+        f'<span style="color:#8ab8ff;font-size:9.5px;font-weight:600;letter-spacing:.11em;'
+        f'background:#8ab8ff12;border:1px solid #8ab8ff3d;padding:1px 5px;'
+        f'border-radius:3px">ADR</span>'
         f'<span style="color:var(--ink);font-weight:500;'
         f"font-family:'IBM Plex Mono',monospace;"
         f'font-size:14.5px;font-variant-numeric:tabular-nums;letter-spacing:-.02em">'
         f'{formatted}</span></div>'
     )
-    if consumed is None or (isinstance(consumed, float) and np.isnan(consumed)):
+    if consumed is None or pd.isna(consumed):
         return head
     consumed = float(consumed)
-    if consumed < 40:
-        c = "#34d399"
-    elif consumed < 70:
-        c = "#f5c451"
-    else:
-        c = "#fb7185"
+    c = "#34d399" if consumed < 40 else ("#f5c451" if consumed < 70 else "#fb7185")
     fill = int(min(max(consumed, 0), 100))
     gauge = (
         f'<div style="display:flex;align-items:center;gap:7px;margin-top:6px">'
@@ -244,27 +233,36 @@ def adr_cell(v: float | None, label: str = "ADR", consumed: float | None = None)
     return f"<div>{head}{gauge}</div>"
 
 
-def force_cell(momentum_score: int, delta: float | None, is_bull: bool) -> str:
-    col = "#34d399" if is_bull else "#fb7185"
-    seg = "".join(
-        (
-            f'<div style="width:14px;height:8px;border-radius:2px;background:{col}"></div>'
-        ) if i < momentum_score else
-        '<div style="width:14px;height:8px;border-radius:2px;background:#16253b"></div>'
-        for i in range(3)
-    )
+def force_cell(
+    adx_values: dict[str, float | None], delta: float | None, is_bull: bool
+) -> str:
+    """Segments ADX (H4/H1/M15, allumés si ADX > seuil : force sans direction) + Δ devise."""
+    seg, tips = [], []
+    for name in ("H4", "H1", "M15"):
+        v = adx_values.get(name) if adx_values else None
+        on = v is not None and v > ADX_TREND_MIN
+        seg.append(
+            f'<div style="width:14px;height:8px;border-radius:2px;'
+            f'background:{"#38bdf8" if on else "#16253b"}"></div>'
+        )
+        tips.append(f"{name} {v:.1f}" if v is not None else f"{name} n/a")
     bars = (
         f'<div style="display:flex;gap:4px;align-items:center" '
-        f'title="ADX H4/H1/M15 alignés avec le signal : {momentum_score}/3">{seg}</div>'
+        f'title="ADX (force de tendance, sans direction) — {" · ".join(tips)}">{"".join(seg)}</div>'
     )
-    if delta is not None:
-        if abs(delta) < 1.5:
+    if delta is None or pd.isna(delta):
+        dh = (
+            '<span style="color:#91a4bf;margin-left:9px;font-size:11.5px;'
+            "font-family:'IBM Plex Mono',monospace\" "
+            'title="Δ force devise non disponible pour cet instrument">n/a</span>'
+        )
+    else:
+        if abs(delta) < FORCE_NEUTRAL_BAND:
             dc, rel = "#91a4bf", "neutre"
         elif (delta > 0) == is_bull:
             dc, rel = "#34d399", "favorable"
         else:
             dc, rel = "#fb7185", "contraire"
-        sign = "+" if delta > 0 else ""
         side = "LONG" if is_bull else "SHORT"
         dh = (
             f'<span style="color:{dc};background:{dc}10;border:1px solid {dc}4d;'
@@ -272,13 +270,7 @@ def force_cell(momentum_score: int, delta: float | None, is_bull: bool) -> str:
             f"font-family:'IBM Plex Mono',monospace;margin-left:9px;"
             f'font-variant-numeric:tabular-nums" '
             f'title="Δ force devise {delta:+.2f} — {rel} au {side}">'
-            f"{sign}{delta:.1f}</span>"
-        )
-    else:
-        dh = (
-            '<span style="color:#91a4bf;margin-left:9px;font-size:11.5px;'
-            "font-family:'IBM Plex Mono',monospace\" "
-            'title="Δ force devise non disponible pour cet instrument">n/a</span>'
+            f'{"+" if delta > 0 else ""}{delta:.1f}</span>'
         )
     return f'<div style="display:flex;align-items:center">{bars}{dh}</div>'
 
@@ -324,27 +316,64 @@ TABLE_CSS = """
 """
 
 
-def kpi_html(df: pd.DataFrame) -> str:
-    a_plus = len(df[(df["Grade"] == "A+") & df["Fraîcheur"].str.contains("⚡", na=False)])
-    a_grade = len(df[(df["Grade"] == "A") & df["Fraîcheur"].str.contains("⚡", na=False)])
-    b_watch = len(
-        df[df["Grade"].isin(["B+", "B"]) & df["Fraîcheur"].str.contains("⚡", na=False)]
-    )
-    longs = len(
-        df[df["Signal"].str.contains("LONG", na=False) & ~df["Signal"].str.contains("expiré")]
-    )
-    shorts = len(
-        df[df["Signal"].str.contains("SHORT", na=False) & ~df["Signal"].str.contains("expiré")]
-    )
-    max_mom = len(df[df.get("Momentum", 0) == 3]) if "Momentum" in df.columns else 0
 
+# --------------------------------------------------------------------------- #
+# Préparation du tableau (logique d'affichage pure, testable sans Streamlit)
+# --------------------------------------------------------------------------- #
+def build_frame(results: list[dict[str, object]], freshness: int) -> pd.DataFrame:
+    """DataFrame d'affichage. `fresh` dépend du sélecteur : aucun rescan requis."""
+    df = pd.DataFrame(results)
+    if df.empty:
+        return df
+    flip = df["signal_type"] == "FLIP"
+    df["fresh"] = flip & (df["mins_ago"].astype(float).fillna(1e9) <= freshness)
+    df["expired"] = flip & ~df["fresh"]
+    return df
+
+
+def apply_filters(
+    df: pd.DataFrame,
+    min_grade: str,
+    include_continuation: bool,
+    hide_counter: bool,
+    hide_expired: bool,
+) -> pd.DataFrame:
+    if df.empty:
+        return df
+    keep = df["grade"].map(GRADE_ORDER).fillna(0) >= MIN_GRADE_MAP[min_grade]
+    if not include_continuation:
+        keep &= df["signal_type"] != "CONTINUATION"
+    if hide_counter:
+        keep &= df["alignment"] != "COUNTER"
+    if hide_expired:
+        keep &= ~df["expired"]
+    return df[keep]
+
+
+def sort_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Ordre déterministe : frais, grade, score, ADX, MTF, ticker."""
+    if df.empty:
+        return df
+    work = df.copy()
+    work["_fresh"] = work["fresh"].astype(int)
+    work["_grade"] = work["grade"].map(GRADE_ORDER).fillna(0).astype(int)
+    work = work.sort_values(
+        ["_fresh", "_grade", "score", "adx_strong", "mtf_pct", "ticker"],
+        ascending=[False, False, False, False, False, True],
+        kind="mergesort",
+    )
+    return work.drop(columns=["_fresh", "_grade"]).reset_index(drop=True)
+
+
+def kpi_html(df: pd.DataFrame) -> str:
+    active = df[~df["expired"]]
     kpis = [
-        ("A+ PREMIUM", a_plus, "#f5c451", ICON_TARGET),
-        ("GRADE A", a_grade, "#4f8dff", ICON_TARGET),
-        ("WATCHLIST", b_watch, "#91a4bf", ICON_CLOCK),
-        ("LONG ACTIFS", longs, "#34d399", icon_arrow(True, 12)),
-        ("SHORT ACTIFS", shorts, "#fb7185", icon_arrow(False, 12)),
-        ("ADX 3/3", max_mom, "#38bdf8", ICON_BOLT),
+        ("A+ PREMIUM", int((active["grade"] == "A+").sum()), "#f5c451", ICON_TARGET),
+        ("GRADE A", int((active["grade"] == "A").sum()), "#4f8dff", ICON_TARGET),
+        ("WATCHLIST", int(active["grade"].isin(["B+", "B"]).sum()), "#91a4bf", ICON_CLOCK),
+        ("LONG ACTIFS", int(active["is_bull"].sum()), "#34d399", icon_arrow(True, 12)),
+        ("SHORT ACTIFS", int((~active["is_bull"]).sum()), "#fb7185", icon_arrow(False, 12)),
+        ("ADX 3/3", int((df["adx_strong"] == 3).sum()), "#38bdf8", ICON_BOLT),
     ]
     cards = "".join(
         f'<div class="kpi{"" if v else " kpi-dim"}" style="--acc:{c}">'
@@ -355,100 +384,71 @@ def kpi_html(df: pd.DataFrame) -> str:
     return f'<div class="kpi-grid">{cards}</div>'
 
 
-def table_html(df: pd.DataFrame, kz_now: str) -> str:
+def _chip(text: str, col: str, icon: str = "") -> str:
+    return (
+        f'<span class="chip" style="background:{col}1f;border:1px solid {col}80;'
+        f'color:{col}">{icon}{html.escape(text)}</span>'
+    )
+
+
+def table_html(df: pd.DataFrame) -> str:
     out = [TABLE_CSS]
     out.append(
         '<div class="sc-wrap"><table class="sc-tbl">\n<thead><tr>\n'
         '  <th style="width:132px">Fraîcheur</th>\n'
         "  <th>Actif</th>\n  <th>Signal</th>\n  <th>Biais daily</th>\n"
-        "  <th>Zone</th>\n  <th style=\"width:140px\">Score /103</th>\n"
-        "  <th>ADR / ATR</th>\n  <th>Momentum / Δ</th>\n"
+        '  <th>Zone</th>\n  <th style="width:140px">Score /100</th>\n'
+        "  <th>ADR</th>\n  <th>ADX / Δ force</th>\n"
         "</tr></thead><tbody>\n"
     )
     for _, row in df.iterrows():
-        grade = str(row.get("Grade", "C"))
-        fresh = "⚡" in str(row.get("Fraîcheur", ""))
+        grade = str(row["grade"])
+        fresh, expired = bool(row["fresh"]), bool(row["expired"])
+        is_bull = bool(row["is_bull"])
         gs = GRADE_STYLE.get(grade, GRADE_STYLE["C"])
-        score = int(row.get("Score", 0))
-        ticker_raw = str(row.get("Actif + Note", "")).split("  ")[0].strip()
-        ticker = html.escape(DISPLAY_NAMES.get(ticker_raw, ticker_raw))
-        sig_value = str(row.get("Signal", "—"))
-        adr_v = row.get("ADR")
-        adr_lbl = str(row.get("ADR Label", "ADR"))
-        adr_cons = row.get("ADR Consumed")
-        bias = str(row.get("Biais Daily", "—"))
-        alignment = str(row.get("Alignement", "ALIGNED"))
-        zone = str(row.get("Zone", "—"))
-        fresh_str = str(row.get("Fraîcheur", "—"))
-        sdelta = row.get("Strength Δ")
-        momentum = int(row.get("Momentum", 0))
-        is_bull = bool(row.get("signal_is_bull", True))
-        mn_bonus = bool(row.get("Midnight Bonus", False))
+        ticker = html.escape(DISPLAY_NAMES.get(row["ticker"], row["ticker"]))
 
-        align_tag = (
-            f'<span class="chip" style="background:rgba(251,113,133,.12);'
-            f'border:1px solid rgba(251,113,133,.5);color:#fb7185">'
-            f"{ICON_ALERT}COUNTER</span>" if alignment == "COUNTER" else ""
-        )
-
-        if kz_now and fresh:
-            kc = killzone_color(kz_now)
-            kz_tag = (
-                f'<span class="chip" style="background:{kc}22;border:1px solid {kc}80;'
-                f'color:{kc}">{killzone_badge(kz_now)}</span>'
+        chips = ""
+        if row["alignment"] == "COUNTER":
+            chips += _chip("COUNTER", "#fb7185", ICON_ALERT)
+        elif row["alignment"] == "NEUTRAL":
+            chips += _chip("BIAIS NEUTRE", "#91a4bf")
+        if row["data_issues"]:
+            chips += (
+                f'<span title="{_attr("Données dégradées : " + ", ".join(row["data_issues"]))}">'
+                f'{_chip("DONNÉES", "#f5c451", ICON_ALERT)}</span>'
             )
-        else:
-            kz_tag = ""
+        if row["killzone"]:
+            kc = killzone_color(row["killzone"])
+            chips += _chip(killzone_badge(row["killzone"]), kc)
 
-        row_bg = gs["bg"] if fresh and grade in ("A+", "A") else "transparent"
-        rail = ("rail-bull" if is_bull else "rail-bear") + ("" if fresh else " stale")
-        row_style = f"background:{row_bg}"
-        if fresh and grade == "A+":
+        highlight = (fresh or not expired) and grade in ("A+", "A")
+        row_style = f"background:{gs['bg'] if highlight else 'transparent'}"
+        if highlight and grade == "A+":
             row_style += ";box-shadow:inset 0 0 36px -18px rgba(245,196,81,.18)"
+        rail = ("rail-bull" if is_bull else "rail-bear") + (" stale" if expired else "")
 
         out.append(
             f'<tr class="{rail}" style="{row_style}">\n'
-            f"  <td>{fresh_cell(fresh_str, fresh)}</td>\n"
+            f'  <td>{fresh_cell(row["signal_type"], row["mins_ago"], fresh)}</td>\n'
             f'  <td style="white-space:nowrap">\n'
             f'    <span class="ticker">{ticker}</span>\n'
             f"    <span class=\"grade-pill\" style=\"color:{gs['color']};background:{gs['line']}30;"
-            f"          border:1px solid {gs['line']}aa\">{gs['label']}</span>\n"
-            f"    {align_tag}\n"
-            f"  </td>\n"
-            f'  <td style="white-space:nowrap">{sig_cell(sig_value, is_bull)}{kz_tag}</td>\n'
-            f"  <td>{bias_cell(bias)}</td>\n"
-            f"  <td>{zone_cell(zone, mn_bonus)}</td>\n"
-            f"  <td>{score_bar(score)}</td>\n"
-            f"  <td>{adr_cell(adr_v, adr_lbl, consumed=adr_cons)}</td>\n"
-            f"  <td>{force_cell(momentum, sdelta, is_bull)}</td>\n"
+            f"border:1px solid {gs['line']}aa\">{gs['label']}</span>\n"
+            f"    {chips}\n  </td>\n"
+            f'  <td style="white-space:nowrap">{sig_cell(is_bull, expired)}</td>\n'
+            f'  <td>{bias_cell(row["bias"], row["bias_detail"])}</td>\n'
+            f'  <td>{zone_cell(row["zone"], row["zone_ref"])}</td>\n'
+            f'  <td>{score_bar(int(row["score"]), row["score_detail"] + " | MTF " + row["mtf_detail"])}</td>\n'
+            f'  <td>{adr_cell(row["adr"], row["adr_consumed"])}</td>\n'
+            f'  <td>{force_cell(row["adx_values"], row["strength_delta"], is_bull)}</td>\n'
             "</tr>"
         )
     out.append("</tbody></table></div>")
     return "\n".join(out)
 
 
-def sort_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Deterministic ordering: fresh, grade, score, momentum, MTF, ticker."""
-    if df.empty:
-        return df
-    work = df.copy()
-    work["_fresh"] = work["Fraîcheur"].astype(str).str.contains("⚡").astype(int)
-    work["_grade"] = work["Grade"].map(GRADE_ORDER).fillna(0).astype(int)
-    work["_score"] = work["Score"].fillna(0).astype(float)
-    work["_mom"] = work.get("Momentum", pd.Series(0, index=work.index)).fillna(0).astype(int)
-    work["_mtf"] = work["MTF Pct"].fillna(0).astype(int)
-    work["_ticker"] = work["Actif + Note"].astype(str)
-    work = work.sort_values(
-        ["_fresh", "_grade", "_score", "_mom", "_mtf", "_ticker"],
-        ascending=[False, False, False, False, False, True],
-        kind="mergesort",
-    )
-    return work.drop(
-        columns=["_fresh", "_grade", "_score", "_mom", "_mtf", "_ticker"]
-    ).reset_index(drop=True)
-
-
-def footer_html(df: pd.DataFrame, elapsed: float, now: datetime, kz_now: str) -> str:
+def footer_html(n: int, elapsed: float, scanned_at: datetime, kz_now: str) -> str:
     kz_foot = (
         f'<span style="color:{killzone_color(kz_now)}">'
         f"killzone {killzone_badge(kz_now)} active</span>" if kz_now
@@ -459,13 +459,13 @@ def footer_html(df: pd.DataFrame, elapsed: float, now: datetime, kz_now: str) ->
     <div style="display:flex;align-items:center;justify-content:flex-end;gap:13px;
                 margin-top:12px;font-size:10px;letter-spacing:.09em;font-weight:500;
                 text-transform:uppercase;color:var(--muted)">
-      <span>{len(df)} signal(s)</span>
+      <span>{n} signal(s)</span>
       <span style="color:#2c4667">•</span>
       <span style="font-family:'IBM Plex Mono',monospace;text-transform:none;letter-spacing:.01em">
         {elapsed}s</span>
       <span style="color:#2c4667">•</span>
       <span style="font-family:'IBM Plex Mono',monospace;text-transform:none;letter-spacing:.01em">
-        {now.strftime('%H:%M:%S')} UTC</span>
+        scan {scanned_at.strftime('%H:%M:%S')} UTC</span>
       <span style="color:#2c4667">•</span>
       {kz_foot}
     </div>

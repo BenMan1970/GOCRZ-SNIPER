@@ -1,4 +1,4 @@
-"""Streamlit entry point. Thin: wiring + rendering only."""
+"""Point d'entrée Streamlit. Mince : câblage + rendu uniquement."""
 
 from __future__ import annotations
 
@@ -9,33 +9,36 @@ from collections import Counter
 from datetime import UTC, datetime
 
 import pandas as pd
-import pytz
 import streamlit as st
 
-from ..clock import FixedClock, SystemClock
+from .. import __version__
+from ..clock import SystemClock
 from ..config import (
+    ADR_MALUS,
+    ADR_MALUS_THRESHOLD,
+    ADX_POINTS,
+    ADX_TREND_MIN,
     ASSETS,
+    BIAS_POINTS,
+    COUNTER_MALUS,
     DEFAULT_FRESHNESS_MIN,
     DISPLAY_NAMES,
     FRESHNESS_CHOICES,
-    GRADE_ORDER,
-    MIN_GRADE_MAP,
+    HMA_FLIP_LOOKBACK,
+    OANDA_API_HOSTS,
+    RATE_BURST,
+    RATE_PER_S,
+    SCORE_WEIGHTS,
 )
-from ..data.fixtures import FixtureSource
-from ..data.oanda import (
-    AuthenticationError,
-    CandleSource,
-    OandaSource,
-    TokenBucket,
-    redact,
-)
-from ..engine import analyze_assets, fetch_strength_data
+from ..data.oanda import AuthenticationError, OandaSource, TokenBucket, redact
+from ..engine import ScanOutput, run_scan
 from ..logging_utils import register_secret
-from ..signals import compute_currency_strength
 from ..status import SIGNAL, classify
 from ..timeutil import get_current_killzone
 from .render import (
     _html,
+    apply_filters,
+    build_frame,
     footer_html,
     killzone_badge,
     killzone_color,
@@ -45,7 +48,10 @@ from .render import (
 )
 from .theme import theme_css
 
-APP_VERSION = "V16.3"
+APP_VERSION = "V" + ".".join(__version__.split(".")[:2])
+SCAN_KEY = "bluestar_scan"
+STALE_SCAN_MIN = 10          # au-delà, on avertit que les résultats ont vieilli
+MIN_GRADE_CHOICES = ["Tous", "B", "B+", "A", "A+"]
 
 
 def _secret(key: str, default: str | None = None) -> str | None:
@@ -107,7 +113,7 @@ def _header_html(kz_now: str) -> str:
             <span class="bs-sep">/</span>
             <span>Zones ICT</span>
             <span class="bs-sep">/</span>
-            <span>FVG &amp; force devise</span>
+            <span>Force devise &amp; ADX</span>
           </p>
         </div>
       </div>
@@ -150,7 +156,7 @@ def _idle_html(n_assets: int) -> str:
             Scanner en veille
           </div>
           <div style="font-size:13px;color:var(--muted);margin-top:8px;letter-spacing:.01em">
-            {n_assets} instruments · 6 timeframes · setups HMA / ICT
+            {n_assets} instruments · 6 timeframes · flips HMA &amp; continuations ICT
           </div>
           <div style="display:flex;justify-content:center;gap:7px;margin-top:22px;flex-wrap:wrap">
             <span class="bs-badge">Lecture seule</span>
@@ -162,40 +168,87 @@ def _idle_html(n_assets: int) -> str:
     )
 
 
+
 def _safe_md(value: object) -> str:
     return html.escape(str(value)).replace("`", "\\`")
 
 
+def _grid_markdown() -> str:
+    w = SCORE_WEIGHTS
+    return f"""
+| Critère | Max | Détail |
+|---|---|---|
+| **Trigger HMA** | {w['Trigger']} pts | flip ≤15 min = 30 · ≤30 min = 20 · ≤45 min = 10 · plus ancien ou continuation = 0 |
+| **MTF** | {w['MTF']} pts | ≥80 % = 25 · ≥65 % = 18 · ≥50 % = 10 · aligné <50 % = 5 · contre-MTF = 0 |
+| **Zone** | {w['Zone']} pts | LONG en DISCOUNT/EXT LOW, SHORT en PREMIUM/EXT HIGH = {w['Zone']} · sinon 0 |
+| **Biais daily** | {w['Bias']} pts | aligné fort = {BIAS_POINTS['STRONG']} · aligné = {BIAS_POINTS['NORMAL']} · neutre ou contraire = 0 |
+| **Force devise** | {w['Force']} pts | Δ favorable ≥5 = 10 · ≥3 = 7 · ≥1,5 = 4 (indisponible pour métaux/indices : score renormalisé) |
+| **ADX** | {w['ADX']} pts | nb de TF (H4·H1·M15) avec ADX > {ADX_TREND_MIN:g} : 3 = {ADX_POINTS[3]} · 2 = {ADX_POINTS[2]} · 1 = {ADX_POINTS[1]} |
+| **Malus ADR** | -{ADR_MALUS} | range du jour de trading (depuis 17h NY) > {ADR_MALUS_THRESHOLD:g} % de l'ADR |
+| **Malus contre-biais** | -{COUNTER_MALUS} | signal contraire au biais daily (⚠ COUNTER) |
+
+Score sur **100**, borné à [0 ; 100]. Grades : A+ ≥85 · A ≥70 · B+ ≥55 · B ≥40 · C.
+
+**Types de signal.** *Flip* : la HMA 20 (M15) vient de changer de couleur (≤{HMA_FLIP_LOOKBACK} bougies). *Tendance* : pas de flip récent, mais biais daily aligné **et** zone favorable ; le Trigger vaut alors 0 (score max 70).
+
+**Biais daily** : 7 votes (structure ±2, EMA 21/50, Weekly Open, clôture J-1, pente EMA50, pente HMA20). Directionnel à ≥3 votes et majorité stricte ; STRONG à ≥5. Une structure cassée interdit seulement de continuer dans le sens cassé.
+
+**Tendance MTF** : une seule définition pour M, W, D, 4H, 1H, 15m (vote de 5 critères : close/EMA50, EMA21/50, EMA9/21, RSI, MACD).
+"""
+
+
 def _status_rows(
-    assets: tuple[str, ...],
-    results: list[dict[str, object]],
-    debug_log: list[tuple[str, str]],
-    now: datetime,
-    token: str,
+    assets: tuple[str, ...], scan: ScanOutput, now: datetime, token: str
 ) -> list[dict[str, str]]:
-    by_ticker = {str(r["Actif + Note"]): r for r in results}
-    reasons = {ticker: reason for ticker, reason in debug_log}
+    by_ticker = {r["ticker"]: r for r in scan.results}
+    reasons = dict(scan.rejects)
     rows: list[dict[str, str]] = []
     for ticker in assets:
         display = DISPLAY_NAMES.get(ticker, ticker)
         if ticker in by_ticker:
-            row = by_ticker[ticker]
+            r = by_ticker[ticker]
+            kind = "tendance" if r["signal_type"] == "CONTINUATION" else "flip"
             rows.append({
                 "Actif": display,
                 "Statut": SIGNAL,
                 "Détail": (
-                    f"{row['Signal']} · {row['Grade']} · "
-                    f"{row['Score']}/103 · {row['Zone']}"
+                    f"{'LONG' if r['is_bull'] else 'SHORT'} ({kind}) · {r['grade']} · "
+                    f"{r['score']}/100 · {r['zone']}"
                 ),
             })
-            continue
-        reason = reasons.get(ticker, "NO_RESULT")
-        rows.append({
-            "Actif": display,
-            "Statut": classify(ticker, reason, now),
-            "Détail": redact(reason, token),
-        })
+        else:
+            reason = reasons.get(ticker, "NO_RESULT")
+            rows.append({
+                "Actif": display,
+                "Statut": classify(reason, now),
+                "Détail": redact(reason, token),
+            })
     return rows
+
+
+def _run_scan(token: str, env: str, clock: SystemClock) -> dict[str, object]:
+    t_start = time.time()
+    progress = st.progress(0)
+    status = st.empty()
+
+    def on_progress(done: int, total: int, ticker: str) -> None:
+        progress.progress(min(done / total, 1.0))
+        status.caption(f"⏳ {DISPLAY_NAMES.get(ticker, ticker)}… ({done}/{total})")
+
+    source = OandaSource(
+        token, env, limiter=TokenBucket(rate_per_s=RATE_PER_S, burst=RATE_BURST)
+    )
+    try:
+        output = run_scan(source, clock, ASSETS, progress=on_progress)
+    finally:
+        source.close()
+        progress.empty()
+        status.empty()
+    return {
+        "output": output,
+        "elapsed": round(time.time() - t_start, 1),
+        "at": clock.now(UTC),
+    }
 
 
 def main() -> None:
@@ -206,176 +259,115 @@ def main() -> None:
     )
     st.markdown(theme_css(), unsafe_allow_html=True)
 
-    fixture_mode = os.environ.get("BLUESTAR_FIXTURE_MODE") == "1"
-    fixed_now = os.environ.get("BLUESTAR_FIXED_NOW")
-    clock = FixedClock(datetime.fromisoformat(fixed_now)) if fixed_now else SystemClock()
-
+    clock = SystemClock()
     token = _secret("OANDA_ACCESS_TOKEN")
     register_secret(token)
-    if not fixture_mode and not token:
+    if not token:
         st.error("🔑 **Secret manquant :** `OANDA_ACCESS_TOKEN`")
         st.stop()
 
     env = str(_secret("OANDA_ENVIRONMENT", "practice") or "practice").strip().lower()
-    if env not in ("practice", "live"):
+    if env not in OANDA_API_HOSTS:
         st.error(f"⚠️ OANDA_ENVIRONMENT invalide : `{env}` — doit être `practice` ou `live`")
         st.stop()
-    if env == "live" and not fixture_mode:
-        st.warning("⚠️ **CONNEXION COMPTE RÉEL (live)** — opérations sur capital réel")
+    if env == "live":
+        st.warning("⚠️ **CONNEXION COMPTE RÉEL (live)** — lecture seule, mais données du compte réel")
 
-    source: CandleSource
-    if fixture_mode:
-        source = FixtureSource(when=clock.now(UTC))
-        assets_env = os.environ.get("BLUESTAR_ASSETS", "")
-        assets = (
-            tuple(a.strip() for a in assets_env.split(",") if a.strip())
-            if assets_env else source.instruments
-        )
-        token = "fixture-token"  # nosec B105
-    else:
-        source = OandaSource(
-            token or "",
-            env,
-            limiter=TokenBucket(rate_per_s=25.0, burst=10.0),
-        )
-        assets = ASSETS
+    st.markdown(_header_html(get_current_killzone(clock)), unsafe_allow_html=True)
 
-    kz_now = get_current_killzone(clock)
-    st.markdown(_header_html(kz_now), unsafe_allow_html=True)
-
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
+    c1, c2, c3, c4, c5, c6 = st.columns([1.3, 1, 1.15, 1.15, 1.15, 0.8])
+    with c1:
         freshness = st.selectbox(
-            "Fraîcheur max du signal (min)",
+            "Fraîcheur max du flip (min)",
             list(FRESHNESS_CHOICES),
             index=list(FRESHNESS_CHOICES).index(DEFAULT_FRESHNESS_MIN),
         )
-    with col2:
-        min_grade = st.selectbox("Grade minimum", ["Tous", "B", "B+", "A", "A+"], index=0)
-    with col3:
+    with c2:
+        min_grade = st.selectbox("Grade minimum", MIN_GRADE_CHOICES, index=0)
+    with c3:
+        include_cont = st.toggle("Inclure les tendances", value=True)
+    with c4:
+        hide_counter = st.toggle("Masquer COUNTER", value=False)
+    with c5:
+        hide_expired = st.toggle("Masquer expirés", value=False)
+    with c6:
         show_debug = st.toggle("🐛 Debug", value=False)
 
-    with st.expander("📘 Grille de notation V16"):
-        st.markdown(
-            """
-| Critère | Max | Détail |
-|---|---|---|
-| **Trigger HMA flip** | 30 pts | ≤15 min = 30 · ≤30 min = 20 · ≤45 min = 10 · >45 min = 0 (fraîcheur = temps réel écoulé) |
-| **MTF Alignment** | 25 pts | ≥80% = 25 · ≥65% = 18 · ≥50% = 10 · contre-MTF = 0 |
-| **Zone D1** | 15 pts | Discount/Premium (EXT LOW/HIGH inclus) = 15 · sinon 0 |
-| **Midnight Bonus** | 3 pts | Confluence directionnelle avec MO |
-| **FVG M15** | 15 pts | Variante LuxAlgo (mitigation + seuil auto) |
-| **ADX momentum** | 10 pts | ADX>25+DI ok = 10 · ADX>20+DI ok = 6 |
-| **ATR actif** | 5 pts | ≥ moyenne = 5 · ≥ 50% = 3 |
-| **ADR Malus** | -5 pts | Range journalier > 70% consommé depuis minuit NY (forex/métaux/crypto — non applicable aux indices, notés en ATR) |
-| **Bias Malus** | -20 pts | Signal contraire (⚠ COUNTER) au biais journalier 5 facteurs |
+    with st.expander("📘 Grille de notation V17"):
+        st.markdown(_grid_markdown())
 
-Score max réel = **103** (échelle affichée « /103 », pas /100), plage possible [−25 ; 103].
+    if st.button("🚀  LANCER LE SCANNER", width="stretch"):
+        try:
+            st.session_state[SCAN_KEY] = _run_scan(token, env, clock)
+        except AuthenticationError:
+            st.error(
+                "🔑 **Token OANDA invalide ou expiré.** "
+                "Vérifie `OANDA_ACCESS_TOKEN` puis relance le scanner."
+            )
+            st.stop()
 
-| Colonne | Description |
-|---|---|
-| **Zone** | DISCOUNT = prix sous MO (00h00 NY) · PREMIUM = prix dessus · EXT HIGH/LOW = hors PDH/PDL |
-| **ADR / ATR** | Valeur + jauge de consommation du range (🟢 <40% · 🟡 40–70% · 🔴 >70%) |
-| **Momentum / Δ** | ■■■ = ADX H4·H1·M15 ≥ 25 alignés avec le signal · Δ = force devise base/quote, vert si favorable au signal, rouge si contraire (n/a indices, métaux et crypto) |
-
-Le biais daily est neutralisé si la structure D1 est cassée (BOS) ou si une majorité 3-2 contredit la HMA20 daily sur 3 bougies.
-            """
-        )
-
-    run = st.button("🚀  LANCER LE SCANNER", width="stretch")
-
-    if not run:
-        st.markdown(_idle_html(len(assets)), unsafe_allow_html=True)
+    scan = st.session_state.get(SCAN_KEY)
+    if scan is None:
+        st.markdown(_idle_html(len(ASSETS)), unsafe_allow_html=True)
         return
 
-    t_start = time.time()
-    progress = st.progress(0)
-    status = st.empty()
-
-    def on_progress(done: int, total: int, ticker: str) -> None:
-        progress.progress(done / total)
-        status.caption(
-            f"⏳ {DISPLAY_NAMES.get(ticker, ticker)}… ({done}/{total})"
+    # ----- Résultats : persistants, les filtres ci-dessus n'imposent AUCUN rescan -----
+    output: ScanOutput = scan["output"]
+    scanned_at: datetime = scan["at"]
+    now = clock.now(UTC)
+    age_min = (now - scanned_at).total_seconds() / 60.0
+    if age_min > STALE_SCAN_MIN:
+        st.warning(
+            f"⏱ Scan vieux de {age_min:.0f} min : fraîcheurs et prix ne sont plus à jour. "
+            "Relance le scanner."
         )
 
-    try:
-        with st.spinner("Calcul Currency Strength H1…"):
-            dfs_h1 = fetch_strength_data(source)
-            strength_scores = compute_currency_strength(dfs_h1)
-
-        with st.spinner("Analyse MTF en cours…"):
-            results, debug_log = analyze_assets(
-                source,
-                clock,
-                assets,
-                freshness,
-                strength_scores,
-                progress=on_progress,
-                max_workers=3,
-            )
-    except AuthenticationError:
-        st.error(
-            "🔑 **Token OANDA invalide ou expiré.** "
-            "Vérifie `OANDA_ACCESS_TOKEN` puis relance le scanner."
-        )
-        st.stop()
-
-    elapsed = round(time.time() - t_start, 1)
-    status.empty()
-    progress.empty()
-    now_utc = clock.now(pytz.UTC)
-
-    safe_debug = [(t, redact(r, token or "")) for t, r in debug_log]
-    status_rows = _status_rows(assets, results, safe_debug, now_utc, token or "")
+    safe_rejects = [(t, redact(r, token)) for t, r in output.rejects]
+    status_rows = _status_rows(ASSETS, output, now, token)
 
     if show_debug:
-        with st.expander(f"🐛 Debug — {len(safe_debug)} rejetés en {elapsed}s"):
-            if safe_debug:
-                cols_d = st.columns(2)
-                with cols_d[0]:
-                    cats: Counter[str] = Counter()
-                    for _, reason in safe_debug:
-                        cats[reason.split(":")[0].strip()] += 1
-                    st.markdown("**Raisons agrégées**")
-                    for cat, n in cats.most_common():
-                        st.markdown(f"- `{_safe_md(cat)}` → **{n}**")
-                with cols_d[1]:
-                    st.markdown("**Détail par actif**")
-                    for ticker, reason in safe_debug[:30]:
-                        st.markdown(
-                            f"`{_safe_md(ticker)}` — {_safe_md(reason)}"
-                        )
+        with st.expander(f"🐛 Debug — {len(safe_rejects)} rejetés en {scan['elapsed']}s", expanded=True):
+            left, right = st.columns(2)
+            with left:
+                cats = Counter(r.split(":")[0].strip() for _, r in safe_rejects)
+                st.markdown("**Raisons agrégées**")
+                for cat, n in cats.most_common():
+                    st.markdown(f"- `{_safe_md(cat)}` → **{n}**")
+            with right:
+                st.markdown("**Détail par actif**")
+                for ticker, reason in safe_rejects:
+                    st.markdown(f"`{_safe_md(ticker)}` — {_safe_md(reason)}")
+            if output.results:
+                st.markdown("**Pourquoi ce biais / ce score (signaux retenus)**")
+                st.dataframe(
+                    pd.DataFrame(output.results)[
+                        ["ticker", "signal_type", "bias", "bias_detail",
+                         "score", "score_detail", "mtf_detail"]
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )
 
-    counts: dict[str, int] = {}
-    for row in status_rows:
-        counts[row["Statut"]] = counts.get(row["Statut"], 0) + 1
+    counts = Counter(row["Statut"] for row in status_rows)
     counts_txt = " · ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
-    with st.expander(f"🩺 État du scan — {counts_txt}", expanded=not results):
-        st.dataframe(
-            pd.DataFrame(status_rows),
-            hide_index=True,
-            width="stretch",
-        )
+    with st.expander(f"🩺 État du scan — {counts_txt}", expanded=not output.results):
+        st.dataframe(pd.DataFrame(status_rows), hide_index=True, width="stretch")
 
-    if not results:
+    if not output.results:
         st.warning("**Aucun signal valide détecté** sur cette session.")
         return
 
-    kz_now = get_current_killzone(clock)
-    df = pd.DataFrame(results)
-    min_val = MIN_GRADE_MAP[min_grade]
-    df = df[df["Grade"].map(GRADE_ORDER) >= min_val]
-    if df.empty:
+    frame = build_frame(output.results, freshness)
+    frame = apply_filters(frame, min_grade, include_cont, hide_counter, hide_expired)
+    if frame.empty:
         st.info("Aucun signal avec ces filtres.")
         return
 
-    df = sort_frame(df)
-    st.markdown(kpi_html(df), unsafe_allow_html=True)
+    frame = sort_frame(frame)
+    kz_now = get_current_killzone(clock)
+    st.markdown(kpi_html(frame), unsafe_allow_html=True)
+    st.markdown(_html(table_html(frame)), unsafe_allow_html=True)
     st.markdown(
-        _html(table_html(df, kz_now)),
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        footer_html(df, elapsed, now_utc, kz_now),
+        footer_html(len(frame), scan["elapsed"], scanned_at, kz_now),
         unsafe_allow_html=True,
     )
