@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import time
 from collections import Counter
 from datetime import UTC, datetime
@@ -258,13 +259,20 @@ def _coverage(status_rows: list[dict[str, str]]) -> tuple[int, list[dict[str, st
     return len(analysed), [r for r in status_rows if r["Statut"] not in (SIGNAL, FILTERED)]
 
 
+def _short_status(row: dict[str, str]) -> str:
+    """« erreur · HTTP 401 » : le statut et, s'il existe, le code HTTP du motif."""
+    code = re.search(r"HTTP \d{3}", row.get("Détail", ""))
+    status = row["Statut"].lower()
+    return f"{status} · {code.group(0)}" if code else status
+
+
 def _coverage_banner(status_rows: list[dict[str, str]]) -> None:
     n_ok, missing = _coverage(status_rows)
     total = len(status_rows)
     if not missing:
         st.success(f"✅ {n_ok}/{total} actifs analysés")
         return
-    listing = " · ".join(f"**{r['Actif']}** ({r['Statut'].lower()})" for r in missing)
+    listing = " · ".join(f"**{r['Actif']}** ({_short_status(r)})" for r in missing)
     if all(r["Statut"] == CLOSED for r in missing):
         st.info(f"🕒 Marché fermé : {n_ok}/{total} actifs analysés. {listing}")
     else:

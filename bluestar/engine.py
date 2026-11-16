@@ -8,6 +8,7 @@ pour chaque actif -> ScanOutput.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -29,7 +30,7 @@ from .config import (
     STALENESS_LIMIT_MIN,
     STRENGTH_PAIRS,
 )
-from .data.oanda import AuthenticationError, CandleSource, is_access_refusal
+from .data.oanda import AuthenticationError, CandleSource, is_access_refusal, is_retryable
 from .indicators import QuantEngine, compute_adr, compute_adr_consumed, is_valid_df
 from .levels import classify_zone, midnight_open
 from .logging_utils import LOGGER_NAME
@@ -52,6 +53,11 @@ Progress = Callable[[int, int, str], None]
 # Refus d'accès consécutifs, sans aucune réponse valide, avant d'abandonner le scan.
 AUTH_ABORT_THRESHOLD = 6
 
+# Seconde passe pour les requêtes en erreur transitoire (refus 401/403 isolé, timeout, 429...) :
+# pause puis faible concurrence, loin du burst initial.
+RECOVERY_WORKERS = 2
+RECOVERY_PAUSE_S = 2.0
+
 FLIP = "FLIP"
 CONTINUATION = "CONTINUATION"
 _M15 = pd.Timedelta(minutes=15)
@@ -67,59 +73,133 @@ class ScanOutput:
 # --------------------------------------------------------------------------- #
 # Téléchargement
 # --------------------------------------------------------------------------- #
+Task = tuple[str, str, int]          # (actif, granularité OANDA, nombre de bougies)
+
+
+@dataclass
+class _Fetch:
+    """État partagé du téléchargement : résultats, erreurs et compteurs de refus."""
+
+    frames: dict[str, Frames]
+    errors: dict[str, dict[str, str]]
+    total: int
+    progress: Progress | None
+    done: int = 0
+    answered: int = 0          # réponses du serveur autres qu'un refus d'accès
+    refused: int = 0           # refus d'accès (401/403)
+    first_refusal: str = ""
+
+    def record(self, ticker: str, gran: str, df: pd.DataFrame, err: str | None, count: bool = True) -> None:
+        self.frames.setdefault(ticker, {})[gran] = df if is_valid_df(df) else None
+        if err:
+            self.errors.setdefault(ticker, {})[gran] = err
+        else:
+            self.errors.get(ticker, {}).pop(gran, None)
+        if is_access_refusal(err):
+            self.refused += 1
+            self.first_refusal = self.first_refusal or str(err)
+        else:
+            self.answered += 1
+        if count:
+            self.done += 1
+            if self.progress:
+                self.progress(self.done, self.total, ticker)
+
+
+def _run(
+    source: CandleSource, tasks: list[Task], workers: int, fetch: _Fetch, abort_after: int | None
+) -> list[Task]:
+    """Exécute `tasks` en parallèle. Retourne les tâches NON exécutées.
+
+    Si `abort_after` refus d'accès s'accumulent sans aucune réponse valide, on interrompt
+    (inutile de marteler l'API) et on rend les tâches restantes pour vérification.
+    """
+    if not tasks:
+        return []
+    pool = ThreadPoolExecutor(max_workers=min(workers, len(tasks)))
+    leftover: list[Task] = []
+    try:
+        futures = {pool.submit(source.fetch, t, g, c): (t, g, c) for t, g, c in tasks}
+        processed: set = set()
+        for fut in as_completed(futures):
+            ticker, gran, _ = futures[fut]
+            df, err = fut.result()
+            fetch.record(ticker, gran, df, err)
+            processed.add(fut)
+            if abort_after and fetch.answered == 0 and fetch.refused >= abort_after:
+                pool.shutdown(wait=True, cancel_futures=True)
+                for other, (t2, g2, c2) in futures.items():
+                    if other in processed:
+                        continue
+                    if other.cancelled():
+                        leftover.append((t2, g2, c2))
+                    else:                                   # déjà en vol : on garde son résultat
+                        df2, err2 = other.result()
+                        fetch.record(t2, g2, df2, err2)
+                break
+    finally:
+        pool.shutdown(wait=True)
+    return leftover
+
+
+def _confirm_or_raise(source: CandleSource, tasks: list[Task], fetch: _Fetch, pause: float) -> None:
+    """Refus massif au démarrage : token faux, ou simple à-coup de l'API ?
+
+    On attend, puis on rejoue séquentiellement quelques requêtes refusées. Si UNE passe, le
+    token est valide : le scan continue. Sinon AuthenticationError (code HTTP + message OANDA).
+    """
+    refused = [t for t in tasks if is_access_refusal(fetch.errors.get(t[0], {}).get(t[1]))]
+    time.sleep(pause)
+    for ticker, gran, count in refused[:3]:
+        df, err = source.fetch(ticker, gran, count)
+        fetch.record(ticker, gran, df, err, count=False)
+        if not is_access_refusal(err):
+            return
+    raise AuthenticationError(fetch.first_refusal)
+
+
+def _recover(source: CandleSource, tasks: list[Task], fetch: _Fetch, pause: float) -> None:
+    """Rejoue UNE fois les requêtes en erreur transitoire, à faible concurrence."""
+    retry = [t for t in tasks if is_retryable(fetch.errors.get(t[0], {}).get(t[1]))]
+    if not retry:
+        return
+    logger.info("passe de récupération : %d requête(s)", len(retry))
+    time.sleep(pause)
+    with ThreadPoolExecutor(max_workers=min(RECOVERY_WORKERS, len(retry))) as pool:
+        futures = {pool.submit(source.fetch, t, g, c): (t, g) for t, g, c in retry}
+        for fut in as_completed(futures):
+            ticker, gran = futures[fut]
+            df, err = fut.result()
+            fetch.record(ticker, gran, df, err, count=False)
+
+
 def fetch_universe(
     source: CandleSource,
     assets: Iterable[str],
     progress: Progress | None = None,
     max_workers: int = FETCH_WORKERS,
+    recovery_pause: float = RECOVERY_PAUSE_S,
 ) -> tuple[dict[str, Frames], dict[str, dict[str, str]]]:
-    """Charge chaque (actif, granularité) exactement une fois, en parallèle.
+    """Charge chaque (actif, granularité) une fois, en parallèle, avec reprise sur erreur.
 
+    1. Passe principale (burst parallèle).
+    2. Si tout est refusé : vérification avant de conclure (voir `_confirm_or_raise`).
+    3. Passe de récupération (faible concurrence) pour les erreurs transitoires.
+    AuthenticationError n'est levée que si, même après pause, rien n'aboutit.
     Les paires de force devise absentes de `assets` sont chargées en H1 seulement.
-    Un refus isolé (401/403) est enregistré pour CET actif ; AuthenticationError n'est levée
-    que si le refus est systématique (aucune requête n'aboutit).
     """
     counts = dict(FETCH_SPECS)
-    tasks: list[tuple[str, str, int]] = [
-        (a, gran, cnt) for a in assets for gran, cnt in FETCH_SPECS
-    ]
+    tasks: list[Task] = [(a, gran, cnt) for a in assets for gran, cnt in FETCH_SPECS]
     asset_set = {t[0] for t in tasks}
     tasks += [(p, "H1", counts["H1"]) for p in STRENGTH_PAIRS if p not in asset_set]
 
-    frames: dict[str, Frames] = {}
-    errors: dict[str, dict[str, str]] = {}
-    total, done = len(tasks), 0
-    answered = refused = 0                  # réponses utiles / refus d'accès (401, 403)
-    first_refusal = ""
-
-    pool = ThreadPoolExecutor(max_workers=max_workers)
-    try:
-        futures = {pool.submit(source.fetch, t, g, c): (t, g) for t, g, c in tasks}
-        for fut in as_completed(futures):
-            ticker, gran = futures[fut]
-            df, err = fut.result()
-            frames.setdefault(ticker, {})[gran] = df if is_valid_df(df) else None
-            if err:
-                errors.setdefault(ticker, {})[gran] = err
-            if is_access_refusal(err):
-                refused += 1
-                first_refusal = first_refusal or err
-            else:
-                answered += 1               # le serveur a répondu : le token fonctionne
-            done += 1
-            if progress:
-                progress(done, total, ticker)
-            # Refus systématique (token/environnement faux) : inutile de continuer.
-            if answered == 0 and refused >= AUTH_ABORT_THRESHOLD:
-                raise AuthenticationError(first_refusal)
-        if answered == 0 and refused:
-            raise AuthenticationError(first_refusal)
-    except AuthenticationError:
-        pool.shutdown(wait=False, cancel_futures=True)
-        raise
-    finally:
-        pool.shutdown(wait=True)
-    return frames, errors
+    fetch = _Fetch({}, {}, len(tasks), progress)
+    leftover = _run(source, tasks, max_workers, fetch, AUTH_ABORT_THRESHOLD)
+    if leftover or (fetch.answered == 0 and fetch.refused):
+        _confirm_or_raise(source, tasks, fetch, recovery_pause)
+        _run(source, leftover, RECOVERY_WORKERS, fetch, None)
+    _recover(source, tasks, fetch, recovery_pause)
+    return fetch.frames, fetch.errors
 
 
 # --------------------------------------------------------------------------- #
@@ -264,6 +344,7 @@ def run_scan(
     assets: Iterable[str] = ASSETS,
     progress: Progress | None = None,
     max_workers: int = FETCH_WORKERS,
+    recovery_pause: float = RECOVERY_PAUSE_S,
 ) -> ScanOutput:
     assets = tuple(assets)
     n_fetch = len(assets) * len(FETCH_SPECS) + sum(1 for p in STRENGTH_PAIRS if p not in assets)
@@ -273,7 +354,7 @@ def run_scan(
         if progress:
             progress(done, total, ticker)
 
-    frames, errors = fetch_universe(source, assets, fetch_progress, max_workers)
+    frames, errors = fetch_universe(source, assets, fetch_progress, max_workers, recovery_pause)
 
     strength = compute_currency_strength(
         {p: frames.get(p, {}).get("H1") for p in STRENGTH_PAIRS}

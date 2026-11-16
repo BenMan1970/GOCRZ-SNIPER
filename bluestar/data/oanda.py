@@ -50,6 +50,18 @@ def is_access_refusal(error: str | None) -> bool:
     return bool(error) and error.startswith((TOKEN_INVALID, ACCESS_DENIED))
 
 
+# Erreurs potentiellement transitoires : valent une seconde passe. Pas les erreurs définitives
+# (instrument inexistant, requête invalide, aucune bougie complète).
+_RETRYABLE = (
+    "TOKEN_INVALID", "ACCESS_DENIED", "TIMEOUT", "NETWORK_ERROR", "RATE_LIMITED",
+    "SERVER_ERROR", "BAD_RESPONSE", "MAX_RETRIES", "HTTP_",
+)
+
+
+def is_retryable(error: str | None) -> bool:
+    return bool(error) and error.startswith(_RETRYABLE)
+
+
 class CandleSource(Protocol):
     def fetch(
         self, instrument: str, granularity: str, count: int
