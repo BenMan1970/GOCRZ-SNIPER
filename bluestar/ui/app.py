@@ -231,7 +231,7 @@ def _status_rows(
             reason = reasons.get(ticker, "NO_RESULT")
             rows.append({
                 "Actif": display,
-                "Statut": classify(reason, now),
+                "Statut": classify(reason, now, ticker),
                 "Détail": redact(reason, token),
             })
     return rows

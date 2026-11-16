@@ -25,6 +25,10 @@ ASSETS: Final[tuple[str, ...]] = (
     "US30_USD", "NAS100_USD", "DE30_EUR",
 )
 
+# Indices CFD : session avec fermeture quotidienne (ex. DAX : dernière bougie ~22h00 CET).
+# Une dernière bougie ancienne y est NORMALE hors session : « marché fermé », pas une panne.
+SESSION_BREAK_ASSETS: Final[tuple[str, ...]] = ("US30_USD", "NAS100_USD", "DE30_EUR")
+
 DISPLAY_NAMES: Final[dict[str, str]] = {"DE30_EUR": "DE40"}
 
 CURRENCIES: Final[tuple[str, ...]] = (

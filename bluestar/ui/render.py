@@ -205,7 +205,7 @@ def score_bar(score: int, tip: str = "") -> str:
 def adr_cell(v: float | None, consumed: float | None = None) -> str:
     if v is None or pd.isna(v):
         return '<span style="color:#91a4bf">—</span>'
-    formatted = f"{v:.5f}" if v < 1.0 else f"{v:.2f}"
+    formatted = f"{v:.5f}" if v < 0.1 else (f"{v:.3f}" if v < 10 else f"{v:.2f}")
     head = (
         f'<div style="display:flex;align-items:baseline;gap:7px">'
         f'<span style="color:#8ab8ff;font-size:9.5px;font-weight:600;letter-spacing:.11em;'

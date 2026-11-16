@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from .config import SESSION_BREAK_ASSETS
 from .timeutil import is_weekend_closed
 
 SIGNAL = "SIGNAL"
@@ -24,7 +25,7 @@ FILTER_PREFIXES = (
 )
 
 
-def classify(reason: str | None, now: datetime) -> str:
+def classify(reason: str | None, now: datetime, ticker: str | None = None) -> str:
     if reason is None:
         return SIGNAL
     if reason == "NO_RESULT":
@@ -37,7 +38,10 @@ def classify(reason: str | None, now: datetime) -> str:
     if reason.startswith("INSUFFICIENT_DATA"):
         return INSUFFICIENT
     if "STALE_DATA" in reason:
-        return CLOSED if is_weekend_closed(now) else STALE
+        # Week-end, ou indice hors session : marché fermé. Pour une paire FX/métal en
+        # semaine, c'est au contraire une vraie anomalie de données.
+        closed = is_weekend_closed(now) or ticker in SESSION_BREAK_ASSETS
+        return CLOSED if closed else STALE
     if reason.startswith(FILTER_PREFIXES):
         return FILTERED
     # Tout le reste (BAD_REQUEST, TOKEN, FETCH_*, EXCEPTION, réseau...) = erreur
