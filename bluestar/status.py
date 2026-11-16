@@ -11,6 +11,7 @@ FILTERED = "FILTRÉ"
 STALE = "DONNÉES PÉRIMÉES"
 CLOSED = "MARCHÉ FERMÉ"
 UNAVAILABLE = "INDISPONIBLE"
+DENIED = "ACCÈS REFUSÉ"
 INSUFFICIENT = "DONNÉES INSUFFISANTES"
 ERROR = "ERREUR"
 
@@ -31,6 +32,8 @@ def classify(reason: str | None, now: datetime) -> str:
     # Codes typés possiblement enveloppés ("FETCH_M15: INSTRUMENT_UNAVAILABLE: ...").
     if "INSTRUMENT_UNAVAILABLE" in reason:
         return UNAVAILABLE
+    if "ACCESS_DENIED" in reason:
+        return DENIED
     if reason.startswith("INSUFFICIENT_DATA"):
         return INSUFFICIENT
     if "STALE_DATA" in reason:

@@ -29,7 +29,7 @@ from .config import (
     STALENESS_LIMIT_MIN,
     STRENGTH_PAIRS,
 )
-from .data.oanda import AuthenticationError, CandleSource
+from .data.oanda import AuthenticationError, CandleSource, is_access_refusal
 from .indicators import QuantEngine, compute_adr, compute_adr_consumed, is_valid_df
 from .levels import classify_zone, midnight_open
 from .logging_utils import LOGGER_NAME
@@ -48,6 +48,9 @@ logger = logging.getLogger(LOGGER_NAME)
 
 Frames = dict[str, pd.DataFrame | None]
 Progress = Callable[[int, int, str], None]
+
+# Refus d'accès consécutifs, sans aucune réponse valide, avant d'abandonner le scan.
+AUTH_ABORT_THRESHOLD = 6
 
 FLIP = "FLIP"
 CONTINUATION = "CONTINUATION"
@@ -73,7 +76,8 @@ def fetch_universe(
     """Charge chaque (actif, granularité) exactement une fois, en parallèle.
 
     Les paires de force devise absentes de `assets` sont chargées en H1 seulement.
-    Lève AuthenticationError dès qu'un token est refusé.
+    Un refus isolé (401/403) est enregistré pour CET actif ; AuthenticationError n'est levée
+    que si le refus est systématique (aucune requête n'aboutit).
     """
     counts = dict(FETCH_SPECS)
     tasks: list[tuple[str, str, int]] = [
@@ -85,19 +89,31 @@ def fetch_universe(
     frames: dict[str, Frames] = {}
     errors: dict[str, dict[str, str]] = {}
     total, done = len(tasks), 0
+    answered = refused = 0                  # réponses utiles / refus d'accès (401, 403)
+    first_refusal = ""
 
     pool = ThreadPoolExecutor(max_workers=max_workers)
     try:
         futures = {pool.submit(source.fetch, t, g, c): (t, g) for t, g, c in tasks}
         for fut in as_completed(futures):
             ticker, gran = futures[fut]
-            df, err = fut.result()          # AuthenticationError remonte ici
+            df, err = fut.result()
             frames.setdefault(ticker, {})[gran] = df if is_valid_df(df) else None
             if err:
                 errors.setdefault(ticker, {})[gran] = err
+            if is_access_refusal(err):
+                refused += 1
+                first_refusal = first_refusal or err
+            else:
+                answered += 1               # le serveur a répondu : le token fonctionne
             done += 1
             if progress:
                 progress(done, total, ticker)
+            # Refus systématique (token/environnement faux) : inutile de continuer.
+            if answered == 0 and refused >= AUTH_ABORT_THRESHOLD:
+                raise AuthenticationError(first_refusal)
+        if answered == 0 and refused:
+            raise AuthenticationError(first_refusal)
     except AuthenticationError:
         pool.shutdown(wait=False, cancel_futures=True)
         raise

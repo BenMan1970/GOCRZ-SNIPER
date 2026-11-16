@@ -25,7 +25,8 @@ logger = logging.getLogger(LOGGER_NAME)
 
 EMPTY_DF = pd.DataFrame(columns=["open", "high", "low", "close"])
 
-TOKEN_INVALID = "TOKEN_INVALID"  # nosec B105
+TOKEN_INVALID = "TOKEN_INVALID"  # nosec B105  (HTTP 401)
+ACCESS_DENIED = "ACCESS_DENIED"  # HTTP 403 : accès refusé à CETTE ressource, pas forcément le token
 INSTRUMENT_UNAVAILABLE = "INSTRUMENT_UNAVAILABLE"
 BAD_REQUEST = "BAD_REQUEST"
 RATE_LIMITED = "RATE_LIMITED"
@@ -38,7 +39,15 @@ MAX_RETRIES_ERROR = "MAX_RETRIES"
 
 
 class AuthenticationError(RuntimeError):
-    """Fatal: the API rejected the token. Never retry per instrument."""
+    """Fatal : l'API refuse l'accès de façon SYSTÉMATIQUE (aucune requête n'aboutit).
+
+    Levée par le moteur, jamais pour un refus isolé. Le message contient le code HTTP
+    et le texte d'OANDA (secret masqué).
+    """
+
+
+def is_access_refusal(error: str | None) -> bool:
+    return bool(error) and error.startswith((TOKEN_INVALID, ACCESS_DENIED))
 
 
 class CandleSource(Protocol):
@@ -53,6 +62,16 @@ def redact(text: object, token: str) -> str:
     if token:
         value = value.replace(token, "[REDACTED]")
     return value
+
+
+def api_message(body: str, token: str = "") -> str:
+    """Texte d'erreur OANDA (champ errorMessage) ou début du corps, secret masqué."""
+    try:
+        payload = json.loads(body)
+        text = payload.get("errorMessage") or payload.get("message") or body
+    except (ValueError, AttributeError):
+        text = body
+    return redact(" ".join(str(text).split()), token)[:160]
 
 
 def classify_400(body: str) -> str:
@@ -193,7 +212,13 @@ class OandaSource:
 
             status = response.status_code
             if status in (401, 403):
-                raise AuthenticationError(TOKEN_INVALID)
+                code = TOKEN_INVALID if status == 401 else ACCESS_DENIED
+                last_error = f"{code}: HTTP {status}: {api_message(response.text, self._token)}"
+                logger.warning("[%s] %s attempt %s", instrument, code, attempt)
+                if attempt < min(2, self._max_retries):      # un refus peut être transitoire
+                    self._sleep(self._delay(attempt))
+                    continue
+                return EMPTY_DF.copy(), last_error
             if status == 400:
                 detail = redact(response.text, self._token)[:120]
                 return EMPTY_DF.copy(), f"{classify_400(response.text)}: {detail}"

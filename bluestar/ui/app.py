@@ -34,7 +34,7 @@ from ..config import (
 from ..data.oanda import AuthenticationError, OandaSource, TokenBucket, redact
 from ..engine import ScanOutput, run_scan
 from ..logging_utils import register_secret
-from ..status import SIGNAL, classify
+from ..status import CLOSED, FILTERED, SIGNAL, classify
 from ..timeutil import get_current_killzone
 from .render import (
     _html,
@@ -55,13 +55,21 @@ STALE_SCAN_MIN = 10          # au-delà, on avertit que les résultats ont vieil
 MIN_GRADE_CHOICES = ["Tous", "B", "B+", "A", "A+"]
 
 
+def clean_secret(value: str | None) -> str | None:
+    """Retire guillemets et espaces/retours à la ligne collés par erreur (cause fréquente de 401)."""
+    if value is None:
+        return None
+    cleaned = "".join(str(value).split()).strip("\"'")
+    return cleaned or None
+
+
 def _secret(key: str, default: str | None = None) -> str | None:
     try:
         if key in st.secrets:
-            return str(st.secrets[key])
+            return clean_secret(str(st.secrets[key]))
     except Exception:  # noqa: BLE001  # nosec B110
         pass
-    return os.environ.get(key, default)
+    return clean_secret(os.environ.get(key, default))
 
 
 def _header_html(kz_now: str) -> str:
@@ -244,6 +252,25 @@ def _debug_frame(results: list[dict[str, object]]) -> pd.DataFrame:
     ].rename(columns={"strength_delta": "Δ force", "hma_gap_atr": "écart HMA (ATR)"})
 
 
+def _coverage(status_rows: list[dict[str, str]]) -> tuple[int, list[dict[str, str]]]:
+    """(actifs réellement analysés, actifs non analysés). Analysé = signal ou filtre métier."""
+    analysed = [r for r in status_rows if r["Statut"] in (SIGNAL, FILTERED)]
+    return len(analysed), [r for r in status_rows if r["Statut"] not in (SIGNAL, FILTERED)]
+
+
+def _coverage_banner(status_rows: list[dict[str, str]]) -> None:
+    n_ok, missing = _coverage(status_rows)
+    total = len(status_rows)
+    if not missing:
+        st.success(f"✅ {n_ok}/{total} actifs analysés")
+        return
+    listing = " · ".join(f"**{r['Actif']}** ({r['Statut'].lower()})" for r in missing)
+    if all(r["Statut"] == CLOSED for r in missing):
+        st.info(f"🕒 Marché fermé : {n_ok}/{total} actifs analysés. {listing}")
+    else:
+        st.warning(f"⚠️ {n_ok}/{total} actifs analysés — non analysés : {listing}. Détail dans « État du scan ».")
+
+
 def _run_scan(token: str, env: str, clock: SystemClock) -> dict[str, object]:
     t_start = time.time()
     progress = st.progress(0)
@@ -317,10 +344,12 @@ def main() -> None:
     if st.button("🚀  LANCER LE SCANNER", width="stretch"):
         try:
             st.session_state[SCAN_KEY] = _run_scan(token, env, clock)
-        except AuthenticationError:
+        except AuthenticationError as exc:
             st.error(
-                "🔑 **Token OANDA invalide ou expiré.** "
-                "Vérifie `OANDA_ACCESS_TOKEN` puis relance le scanner."
+                f"🔑 **OANDA refuse l'accès** (environnement `{env}`) : `{_safe_md(exc)}`\n\n"
+                "Toutes les requêtes ont été refusées. Vérifie que `OANDA_ACCESS_TOKEN` est un token "
+                "de l'API **v20** et qu'il correspond à `OANDA_ENVIRONMENT` : un token *practice* "
+                "ne fonctionne pas en *live* (et inversement)."
             )
             st.stop()
 
@@ -359,6 +388,7 @@ def main() -> None:
                 st.markdown("**Pourquoi ce biais / ce score (signaux retenus)**")
                 st.dataframe(_debug_frame(output.results), hide_index=True, width="stretch")
 
+    _coverage_banner(status_rows)
     counts = Counter(row["Statut"] for row in status_rows)
     counts_txt = " · ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
     with st.expander(f"🩺 État du scan — {counts_txt}", expanded=not output.results):
