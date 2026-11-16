@@ -413,6 +413,10 @@ def table_html(df: pd.DataFrame) -> str:
             chips += _chip("COUNTER", "#fb7185", ICON_ALERT)
         elif row["alignment"] == "NEUTRAL":
             chips += _chip("BIAIS NEUTRE", "#91a4bf")
+        if row.get("hma_pullback"):
+            gap_atr = row.get("hma_gap_atr")
+            tip = f"Prix à {gap_atr} ATR du mauvais côté de la HMA (toléré)"
+            chips += f'<span title="{_attr(tip)}">{_chip("PULLBACK HMA", "#38bdf8")}</span>'
         if row["data_issues"]:
             chips += (
                 f'<span title="{_attr("Données dégradées : " + ", ".join(row["data_issues"]))}">'

@@ -25,6 +25,7 @@ from ..config import (
     DISPLAY_NAMES,
     FRESHNESS_CHOICES,
     HMA_FLIP_LOOKBACK,
+    HMA_PRICE_TOLERANCE_ATR,
     OANDA_API_HOSTS,
     RATE_BURST,
     RATE_PER_S,
@@ -183,13 +184,15 @@ def _grid_markdown() -> str:
 | **Zone** | {w['Zone']} pts | LONG en DISCOUNT/EXT LOW, SHORT en PREMIUM/EXT HIGH = {w['Zone']} · sinon 0 |
 | **Biais daily** | {w['Bias']} pts | aligné fort = {BIAS_POINTS['STRONG']} · aligné = {BIAS_POINTS['NORMAL']} · neutre ou contraire = 0 |
 | **Force devise** | {w['Force']} pts | Δ favorable ≥5 = 10 · ≥3 = 7 · ≥1,5 = 4 (indisponible pour métaux/indices : score renormalisé) |
-| **ADX** | {w['ADX']} pts | nb de TF (H4·H1·M15) avec ADX > {ADX_TREND_MIN:g} : 3 = {ADX_POINTS[3]} · 2 = {ADX_POINTS[2]} · 1 = {ADX_POINTS[1]} |
+| **ADX** | {w['ADX']} pts | nb de TF (H4·H1·M15) avec ADX > {ADX_TREND_MIN:g} : 3 = {ADX_POINTS[3]} · 2 = {ADX_POINTS[2]} · 1 = {ADX_POINTS[1]} · non crédité si COUNTER |
 | **Malus ADR** | -{ADR_MALUS} | range du jour de trading (depuis 17h NY) > {ADR_MALUS_THRESHOLD:g} % de l'ADR |
 | **Malus contre-biais** | -{COUNTER_MALUS} | signal contraire au biais daily (⚠ COUNTER) |
 
 Score sur **100**, borné à [0 ; 100]. Grades : A+ ≥85 · A ≥70 · B+ ≥55 · B ≥40 · C.
 
 **Types de signal.** *Flip* : la HMA 20 (M15) vient de changer de couleur (≤{HMA_FLIP_LOOKBACK} bougies). *Tendance* : pas de flip récent, mais biais daily aligné **et** zone favorable ; le Trigger vaut alors 0 (score max 70).
+
+**Côté de la HMA.** Le prix doit être du bon côté de la HMA 20. Un écart ≤ {HMA_PRICE_TOLERANCE_ATR:g} ATR M15 est toléré (chip PULLBACK HMA) ; au-delà, rejet avec l'écart en ATR.
 
 **Biais daily** : 7 votes (structure ±2, EMA 21/50, Weekly Open, clôture J-1, pente EMA50, pente HMA20). Directionnel à ≥3 votes et majorité stricte ; STRONG à ≥5. Une structure cassée interdit seulement de continuer dans le sens cassé.
 
@@ -224,6 +227,21 @@ def _status_rows(
                 "Détail": redact(reason, token),
             })
     return rows
+
+
+def _debug_frame(results: list[dict[str, object]]) -> pd.DataFrame:
+    """Tout ce qui explique un signal, sans rien à déduire."""
+    def adx_text(values: dict[str, float | None]) -> str:
+        return " · ".join(f"{k} {'n/a' if v is None else v}" for k, v in values.items())
+
+    df = pd.DataFrame(results)
+    df["adx"] = df["adx_values"].map(adx_text)
+    df["pullback_hma"] = df["hma_pullback"].map({True: "oui", False: ""})
+    return df[
+        ["ticker", "signal_type", "alignment", "zone", "bias", "bias_detail",
+         "strength_delta", "adx", "hma_gap_atr", "pullback_hma",
+         "score", "score_detail", "mtf_detail"]
+    ].rename(columns={"strength_delta": "Δ force", "hma_gap_atr": "écart HMA (ATR)"})
 
 
 def _run_scan(token: str, env: str, clock: SystemClock) -> dict[str, object]:
@@ -287,7 +305,7 @@ def main() -> None:
     with c3:
         include_cont = st.toggle("Inclure les tendances", value=True)
     with c4:
-        hide_counter = st.toggle("Masquer COUNTER", value=False)
+        hide_counter = st.toggle("Masquer COUNTER", value=True)
     with c5:
         hide_expired = st.toggle("Masquer expirés", value=False)
     with c6:
@@ -339,14 +357,7 @@ def main() -> None:
                     st.markdown(f"`{_safe_md(ticker)}` — {_safe_md(reason)}")
             if output.results:
                 st.markdown("**Pourquoi ce biais / ce score (signaux retenus)**")
-                st.dataframe(
-                    pd.DataFrame(output.results)[
-                        ["ticker", "signal_type", "bias", "bias_detail",
-                         "score", "score_detail", "mtf_detail"]
-                    ],
-                    hide_index=True,
-                    width="stretch",
-                )
+                st.dataframe(_debug_frame(output.results), hide_index=True, width="stretch")
 
     counts = Counter(row["Statut"] for row in status_rows)
     counts_txt = " · ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
@@ -358,7 +369,10 @@ def main() -> None:
         return
 
     frame = build_frame(output.results, freshness)
+    n_counter = int((frame["alignment"] == "COUNTER").sum())
     frame = apply_filters(frame, min_grade, include_cont, hide_counter, hide_expired)
+    if hide_counter and n_counter:
+        st.caption(f"{n_counter} signal(s) COUNTER masqué(s) — désactive « Masquer COUNTER » pour les voir.")
     if frame.empty:
         st.info("Aucun signal avec ces filtres.")
         return

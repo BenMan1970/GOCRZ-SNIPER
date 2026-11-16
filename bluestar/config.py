@@ -67,6 +67,9 @@ ADX_MIN_BARS: Final[int] = 50       # warm-up de l'ADX (EWM 14)
 HMA_PERIOD: Final[int] = 20
 HMA_FLIP_LOOKBACK: Final[int] = 20          # un flip <= 20 bougies M15 = signal FLIP
 CONTINUATION_ENABLED: Final[bool] = True    # setups sans flip récent (tendance)
+# Tolérance (en ATR M15) quand le prix est du mauvais côté de la HMA : un prix à
+# 2 pips d'une HMA descendante n'est pas un rejet, c'est un pullback sur la HMA.
+HMA_PRICE_TOLERANCE_ATR: Final[float] = 0.25
 
 FRESHNESS_CHOICES: Final[tuple[int, ...]] = (15, 30, 45)
 DEFAULT_FRESHNESS_MIN: Final[int] = 30

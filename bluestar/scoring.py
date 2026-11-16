@@ -4,6 +4,7 @@ Composantes (poids dans config.SCORE_WEIGHTS) :
 Trigger HMA 30 · MTF 25 · Zone 15 · Biais daily 10 · Force devise 10 · ADX 10.
 Si la force devise est indisponible (métaux, indices), sa composante sort du
 dénominateur : le score est renormalisé, l'instrument n'est jamais pénalisé.
+ADX : non crédité si le signal est contraire au biais daily.
 Malus : ADR > 70 % consommé (-5) · signal contraire au biais daily (-20).
 """
 
@@ -102,7 +103,9 @@ def compute_score(
         favorable = strength_delta if is_bull else -strength_delta
         earned["Force"] = _tier(favorable, FORCE_TIERS)
 
-    earned["ADX"] = ADX_POINTS[max(0, min(3, adx_strong_count))]
+    # L'ADX (sans direction) mesure la force de la tendance en cours : pour un signal
+    # COUNTER c'est la force de la tendance qu'il combat, donc aucun crédit.
+    earned["ADX"] = 0 if alignment == COUNTER else ADX_POINTS[max(0, min(3, adx_strong_count))]
 
     base = round(sum(earned.values()) / available * 100)
     malus: dict[str, int] = {}

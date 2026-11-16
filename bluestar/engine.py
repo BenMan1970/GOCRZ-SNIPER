@@ -23,6 +23,7 @@ from .config import (
     GRAN_TO_TF,
     HMA_FLIP_LOOKBACK,
     HMA_PERIOD,
+    HMA_PRICE_TOLERANCE_ATR,
     MIN_BIAS_BARS,
     MIN_TREND_BARS,
     STALENESS_LIMIT_MIN,
@@ -140,10 +141,22 @@ def analyze_asset(
 
     is_bull = state.direction > 0
     hma_now = float(hma.iloc[-1])
-    if is_bull and price <= hma_now:
-        return None, f"PRICE_BELOW_HMA_ON_BULL: prix {price:.5g} <= HMA {hma_now:.5g}"
-    if not is_bull and price >= hma_now:
-        return None, f"PRICE_ABOVE_HMA_ON_BEAR: prix {price:.5g} >= HMA {hma_now:.5g}"
+
+    # Côté du prix vs HMA. gap > 0 : prix du MAUVAIS côté (distance en prix).
+    gap = (hma_now - price) if is_bull else (price - hma_now)
+    atr_m15 = float(QuantEngine.atr(df_m15, 14).iloc[-1])
+    atr_ok = pd.notna(atr_m15) and atr_m15 > 0
+    gap_atr = round(gap / atr_m15, 2) if atr_ok else None
+    hma_pullback = False
+    if gap >= 0:
+        tolerance = HMA_PRICE_TOLERANCE_ATR * atr_m15 if atr_ok else 0.0
+        if tolerance > 0 and gap <= tolerance:
+            hma_pullback = True                  # pullback sur la HMA : accepté, signalé
+        else:
+            code = "PRICE_BELOW_HMA_ON_BULL" if is_bull else "PRICE_ABOVE_HMA_ON_BEAR"
+            sign = "<=" if is_bull else ">="
+            detail = f" (écart {gap_atr} ATR > {HMA_PRICE_TOLERANCE_ATR})" if atr_ok else ""
+            return None, f"{code}: prix {price:.5g} {sign} HMA {hma_now:.5g}{detail}"
 
     if bias.direction == state.direction:
         alignment = ALIGNED
@@ -205,6 +218,8 @@ def analyze_asset(
         "signal_type": FLIP if is_flip else CONTINUATION,
         "mins_ago": mins_ago,
         "killzone": killzone_at(flip_time.to_pydatetime()) if flip_time is not None else "",
+        "hma_pullback": hma_pullback,
+        "hma_gap_atr": gap_atr,
         "bias": bias.label,
         "bias_detail": bias.describe(),
         "alignment": alignment,
